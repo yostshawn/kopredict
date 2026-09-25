@@ -1,0 +1,12 @@
+pandas>=2.0
+pyarrow>=14.0
+fastparquet>=2023.10.0
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+seaborn>=0.12
+statsmodels>=0.14
+networkx>=3.0
+pyoncoprint>=0.2.6
+s3fs>=2024.1
+openpyxl>=3.1

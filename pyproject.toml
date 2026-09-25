@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kopredict"
+version = "0.1.0"
+description = "kopredict - knockout sensitivity marker prediction from public DepMap inputs"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "Engine Biosciences"}]
+dependencies = [
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "fastparquet>=2023.10.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
+    "statsmodels>=0.14",
+    "networkx>=3.0",
+    "pyoncoprint>=0.2.6",
+    "s3fs>=2024.1",
+    "openpyxl>=3.1",
+]
+
+[project.scripts]
+kopredict = "kopredict.cli_impl:main"
+kopredict-download = "kopredict.download:main"
+kopredict-prepare = "kopredict.prepare:main"
+
+[project.optional-dependencies]
+dev = ["pytest", "black", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
