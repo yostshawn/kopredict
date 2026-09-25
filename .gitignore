@@ -1,4 +1,7 @@
-data/
+data/*
+!data/raw/
+data/raw/*
+!data/raw/downloads.csv
 old_code/
 __pycache__/
 *.py[cod]

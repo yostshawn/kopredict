@@ -10,6 +10,9 @@ HRD_DOI = "https://doi.org/10.1158/2767-9764.CRC-24-0316"
 PETLJAK_URL = "https://www.cell.com/cell/fulltext/S0092-8674(19)30161-8"
 
 NO_CAPTCHA_CATALOG_URL = "https://depmap.org/portal/api/no-captcha/download/files"
+# Same table as the no-captcha catalog, plus signed download URLs. Cloudflare
+# serves an HTML check to scripts, so this often has to be saved in a browser.
+CATALOG_URL = "https://depmap.org/portal/api/download/files"
 
 # CloudFront signature expires (Expires=1793322017). Re-download Table S5 from HRD_DOI if this fails.
 HRD_XLSX_URL = (
@@ -34,20 +37,27 @@ LOF_CLASSES = (
     "Nonstop_Mutation",
 )
 
-# (release, filename) pairs verified against the DepMap no-captcha catalog.
-PINNED_FILES = (
-    ("DepMap Public 26Q1", "Model.csv"),
-    ("DepMap Public 26Q1", "Gene.csv"),
-    ("DepMap Public 26Q1", "OmicsProfiles.csv"),
-    ("DepMap Public 26Q1", "CRISPRGeneEffect.csv"),
-    ("DepMap Public 26Q1", "OmicsCNGeneWGS.csv"),
-    ("DepMap Public 26Q1", "OmicsSomaticMutations.csv"),
-    ("DepMap Public 26Q1", "OmicsSomaticMutationsMatrixHotspot.csv"),
-    ("DepMap Public 26Q1", "OmicsSomaticMutationsMatrixDamaging.csv"),
-    ("DepMap Public 26Q1", "OmicsExpressionTPMLogp1HumanProteinCodingGenes.csv"),
-    ("DepMap Public 26Q1", "OmicsFusionFiltered.csv"),
-    ("DepMap Public 26Q1", "OmicsGlobalSignatures.csv"),
-    ("DepMap Public 26Q1", "OmicsCNGeneMC_WES.csv"),
+DEFAULT_DEPMAP_RELEASE = "26Q1"
+BUNDLED_CATALOG_NAME = "downloads.csv"
+
+# Filenames taken from one DepMap Public quarter. Older quarters omit some of these.
+DEPMAP_FILENAMES = (
+    "Model.csv",
+    "Gene.csv",
+    "OmicsProfiles.csv",
+    "CRISPRGeneEffect.csv",
+    "OmicsCNGeneWGS.csv",
+    "OmicsSomaticMutations.csv",
+    "OmicsSomaticMutationsMatrixHotspot.csv",
+    "OmicsSomaticMutationsMatrixDamaging.csv",
+    "OmicsExpressionTPMLogp1HumanProteinCodingGenes.csv",
+    "OmicsFusionFiltered.csv",
+    "OmicsGlobalSignatures.csv",
+    "OmicsCNGeneMC_WES.csv",
+)
+
+# Releases that are not tied to the --depmap-release quarter.
+OTHER_PINNED_FILES = (
     ("DEMETER2 Data v6", "D2_combined_gene_dep_scores.csv"),
     ("Sanger GDSC1 and GDSC2", "sanger-dose-response.csv"),
     ("Sanger GDSC1 and GDSC2", "sanger-viability.csv"),

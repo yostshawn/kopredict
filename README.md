@@ -16,17 +16,16 @@ Processed files go in `data/` (override with `KOPREDICT_DATA_DIR`). Raw download
 
 ### 1. DepMap catalog
 
-Signed URLs expire and the URL list sits behind the DepMap portal check. In a browser, open https://depmap.org/portal/api/download/files and save the CSV (it must include a `url` column). Then:
+`data/raw/downloads.csv` is the DepMap file list, including signed download URLs. Those URLs expire. Download a fresh copy from [https://depmap.org/portal/api/download/files](https://depmap.org/portal/api/download/files) in a browser and replace `data/raw/downloads.csv` with that file before running the download, and again whenever a link starts failing.
 
 ```bash
-kopredict-download --catalog catalog.csv
+kopredict-download
+kopredict-download --depmap-release 25Q3
 ```
 
-That fetches the open filename catalog, downloads only the pinned files, and checks `md5_hash`.
+`--depmap-release` selects the DepMap Public quarter (default `26Q1`). Pass a label such as `26Q1` or `25Q3`. The command checks that every required DepMap filename exists in that release and stops with an error when one does not. Older quarters often use different copy-number and expression filenames. DEMETER2, GDSC, and proteomics files are not tied to that quarter.
 
-Pinned files:
-
-- DepMap Public 26Q1: `Model.csv`, `Gene.csv`, `OmicsProfiles.csv`, `CRISPRGeneEffect.csv`, `OmicsCNGeneWGS.csv`, `OmicsSomaticMutations.csv`, `OmicsSomaticMutationsMatrixHotspot.csv`, `OmicsSomaticMutationsMatrixDamaging.csv`, `OmicsExpressionTPMLogp1HumanProteinCodingGenes.csv`, `OmicsFusionFiltered.csv`, `OmicsGlobalSignatures.csv`, `OmicsCNGeneMC_WES.csv`
+Pinned DepMap filenames: `Model.csv`, `Gene.csv`, `OmicsProfiles.csv`, `CRISPRGeneEffect.csv`, `OmicsCNGeneWGS.csv`, `OmicsSomaticMutations.csv`, `OmicsSomaticMutationsMatrixHotspot.csv`, `OmicsSomaticMutationsMatrixDamaging.csv`, `OmicsExpressionTPMLogp1HumanProteinCodingGenes.csv`, `OmicsFusionFiltered.csv`, `OmicsGlobalSignatures.csv`, `OmicsCNGeneMC_WES.csv`.
 - DEMETER2 Data v6: `D2_combined_gene_dep_scores.csv`
 - Sanger GDSC1 and GDSC2: `sanger-dose-response.csv`, `sanger-viability.csv`
 - Harmonized Public Proteomics 26Q1: `harmonized_Sanger_MS_2022.csv`, `harmonized_MS_CCLE_Gygi.csv`, `harmonized_RPPA_CCLE.csv`
@@ -77,7 +76,7 @@ The image does not contain DepMap files. Mount a `data/` directory:
 
 ```bash
 docker build -t kopredict .
-docker run --rm --entrypoint kopredict-download -v "$PWD/data:/data" -v "$PWD/catalog.csv:/catalog.csv:ro" kopredict --catalog /catalog.csv
+docker run --rm --entrypoint kopredict-download -v "$PWD/data:/data" kopredict --depmap-release 26Q1
 docker run --rm --entrypoint kopredict-prepare -v "$PWD/data:/data" kopredict
 docker run --rm -v "$PWD/data:/data" -v "$PWD/results:/results" kopredict -t IPPK -d crispr -c SOLID -O oncotreeprimarydisease --output-dir /results
 ```

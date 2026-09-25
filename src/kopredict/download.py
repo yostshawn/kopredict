@@ -14,13 +14,17 @@ import pandas as pd
 
 from kopredict.local_data import get_data_dir
 from kopredict.sources import (
+    BUNDLED_CATALOG_NAME,
+    CATALOG_URL,
+    DEFAULT_DEPMAP_RELEASE,
+    DEPMAP_FILENAMES,
     HRD_DOI,
     HRD_RAW_NAME,
     HRD_XLSX_URL,
     NO_CAPTCHA_CATALOG_URL,
+    OTHER_PINNED_FILES,
     PETLJAK_RAW_NAME,
     PETLJAK_URL,
-    PINNED_FILES,
 )
 
 
@@ -64,31 +68,71 @@ def _lookup(catalog: pd.DataFrame, release: str, filename: str) -> pd.Series | N
     return hit.iloc[0]
 
 
-def download_pinned(catalog_path: Path, data_dir: Path) -> None:
+def depmap_release_label(token: str, catalog: pd.DataFrame) -> str:
+    """Map 26Q1 or 'DepMap Public 26Q1' onto a release name present in the catalog."""
+    releases = sorted(
+        {
+            str(value)
+            for value in catalog.loc[
+                catalog["release"].astype(str).str.startswith("DepMap Public"), "release"
+            ].unique()
+        }
+    )
+    text = token.strip()
+    if text in releases:
+        return text
+    quarter = text.upper().replace("DEPMAP PUBLIC", "").replace(" ", "")
+    matches = [name for name in releases if name.upper().replace(" ", "").endswith(quarter)]
+    if len(matches) == 1:
+        return matches[0]
+    if not releases:
+        raise SystemExit(f"Catalog has no DepMap Public releases, so {token!r} cannot be resolved.")
+    known = "\n  ".join(releases)
+    raise SystemExit(f"Unknown DepMap release {token!r}. Releases in this catalog:\n  {known}")
+
+
+def files_for_release(depmap_release: str) -> tuple[tuple[str, str], ...]:
+    depmap = tuple((depmap_release, name) for name in DEPMAP_FILENAMES)
+    return depmap + OTHER_PINNED_FILES
+
+
+def require_catalog_files(catalog: pd.DataFrame, depmap_release: str) -> tuple[tuple[str, str], ...]:
+    if "url" not in catalog.columns:
+        raise SystemExit(
+            "Catalog has no url column. Replace data/raw/downloads.csv with a fresh save of "
+            f"{CATALOG_URL}."
+        )
+    wanted = files_for_release(depmap_release)
+    missing = [
+        f"{release} / {filename}"
+        for release, filename in wanted
+        if _lookup(catalog, release, filename) is None
+        or not str(_lookup(catalog, release, filename).get("url", "")).strip()
+    ]
+    if missing:
+        raise SystemExit(
+            "These files are not in the selected DepMap catalog. "
+            "Older quarters use different filenames.\n  " + "\n  ".join(missing)
+        )
+    return wanted
+
+
+def download_pinned(catalog_path: Path, data_dir: Path, depmap_release: str) -> None:
     raw = _raw_dir(data_dir)
+    public = None
     print(f"Fetching filename catalog {NO_CAPTCHA_CATALOG_URL}")
     catalog_check_path = raw / "depmap_no_captcha_catalog.csv"
-    _fetch(NO_CAPTCHA_CATALOG_URL, catalog_check_path)
-    public = _load_catalog(catalog_check_path)
+    try:
+        _fetch(NO_CAPTCHA_CATALOG_URL, catalog_check_path)
+        public = _load_catalog(catalog_check_path)
+    except Exception as exc:
+        print(f"Could not refresh the open filename catalog ({exc}). Using checksums from {catalog_path}.")
     user = _load_catalog(catalog_path)
+    release = depmap_release_label(depmap_release, user)
+    pinned = require_catalog_files(user, release)
+    print(f"DepMap release: {release}")
 
-    missing_from_public = [
-        f"{release}/{filename}"
-        for release, filename in PINNED_FILES
-        if _lookup(public, release, filename) is None
-    ]
-    if missing_from_public:
-        raise SystemExit(
-            "Pinned files are not in the DepMap catalog:\n  " + "\n  ".join(missing_from_public)
-        )
-
-    if "url" not in user.columns:
-        raise SystemExit(
-            f"{catalog_path} has no url column. Save "
-            "https://depmap.org/portal/api/download/files from a browser after the captcha check."
-        )
-
-    for release, filename in PINNED_FILES:
+    for release, filename in pinned:
         row = _lookup(user, release, filename)
         if row is None or not str(row.get("url", "")).strip():
             raise SystemExit(
@@ -97,7 +141,7 @@ def download_pinned(catalog_path: Path, data_dir: Path) -> None:
             )
         dest = raw / filename
         expected = str(row.get("md5_hash", "")).strip().lower()
-        if not expected:
+        if not expected and public is not None:
             public_row = _lookup(public, release, filename)
             if public_row is not None:
                 expected = str(public_row.get("md5_hash", "")).strip().lower()
@@ -130,12 +174,72 @@ def download_hrd(data_dir: Path) -> None:
     print(f"Saved {dest}")
 
 
+def _catalog_has_urls(path: Path) -> bool:
+    head = path.read_bytes()[:400].lstrip().lower()
+    if head.startswith(b"<") or b"<html" in head:
+        return False
+    try:
+        frame = pd.read_csv(path, dtype=str, nrows=5)
+    except Exception:
+        return False
+    return "url" in frame.columns and frame["url"].fillna("").astype(str).str.strip().ne("").any()
+
+
+def fetch_url_catalog(data_dir: Path) -> Path | None:
+    """Save the DepMap catalog that includes signed URLs, when the portal allows it."""
+    dest = _raw_dir(data_dir) / "depmap_download_catalog.csv"
+    print(f"Fetching download-URL catalog {CATALOG_URL}")
+    try:
+        _fetch(CATALOG_URL, dest)
+    except Exception as exc:
+        print(f"Could not fetch the URL catalog ({exc}).", file=sys.stderr)
+        dest.unlink(missing_ok=True)
+        return None
+    if _catalog_has_urls(dest):
+        print(f"Saved URL catalog to {dest}")
+        return dest
+    dest.unlink(missing_ok=True)
+    return None
+
+
+def bundled_catalog(data_dir: Path) -> Path | None:
+    candidates = [
+        data_dir / "raw" / BUNDLED_CATALOG_NAME,
+        Path(__file__).resolve().parents[2] / "data" / "raw" / BUNDLED_CATALOG_NAME,
+    ]
+    for path in candidates:
+        if path.is_file() and _catalog_has_urls(path):
+            return path
+    return None
+
+
+def _catalog_instructions() -> str:
+    return (
+        "No catalog with download URLs was found. "
+        f"Open {CATALOG_URL} in a browser, complete the check, and replace data/raw/downloads.csv "
+        "with that file. Signed URLs expire, so replace it with a fresh download when fetches fail."
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Download pinned files for kopredict-prepare.")
     parser.add_argument(
+        "--depmap-release",
+        default=DEFAULT_DEPMAP_RELEASE,
+        metavar="QUARTER",
+        help=(
+            "DepMap Public quarter to download, such as 26Q1 or 25Q3 "
+            f"(default: {DEFAULT_DEPMAP_RELEASE}). The command exits if that release "
+            "does not contain every required filename."
+        ),
+    )
+    parser.add_argument(
         "--catalog",
-        required=True,
-        help="CSV from https://depmap.org/portal/api/download/files with a filled url column.",
+        default=None,
+        help=(
+            "CSV from the DepMap download-URL catalog. Default: data/raw/downloads.csv. "
+            "Replace that file with a fresh browser save when the signed URLs expire."
+        ),
     )
     parser.add_argument(
         "--data-dir",
@@ -150,11 +254,19 @@ def main(argv: list[str] | None = None) -> None:
         from kopredict import local_data
 
         local_data.clear_load_caches()
-    catalog = Path(args.catalog).expanduser().resolve()
-    if not catalog.is_file():
-        raise SystemExit(f"Catalog not found: {catalog}")
     data_dir = get_data_dir()
-    download_pinned(catalog, data_dir)
+    if args.catalog:
+        catalog = Path(args.catalog).expanduser().resolve()
+        if not catalog.is_file():
+            raise SystemExit(f"Catalog not found: {catalog}")
+    else:
+        catalog = bundled_catalog(data_dir)
+        if catalog is None:
+            catalog = fetch_url_catalog(data_dir)
+        if catalog is None:
+            raise SystemExit(_catalog_instructions())
+        print(f"Using catalog {catalog}")
+    download_pinned(catalog, data_dir, args.depmap_release)
     download_hrd(data_dir)
     petljak = data_dir / "raw" / PETLJAK_RAW_NAME
     print(
