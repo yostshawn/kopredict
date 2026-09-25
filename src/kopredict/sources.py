@@ -1,30 +1,19 @@
-"""Pinned public inputs and literature citations for kopredict ingest.
+"""Paths and loaders for metadata CSVs that list public inputs.
 
-Signed download URLs are not stored for DepMap catalog files. Those URLs expire
-and are read from a catalog CSV the user saves in a browser. The HRD workbook
-URL below is a CloudFront link and will also expire; the DOI stays the stable
-citation.
+Which DepMap files to fetch is metadata/depmap_files.csv. Publication workbooks
+are metadata/additional.csv. Signed DepMap links live in metadata/downloads.csv.
 """
 
-HRD_DOI = "https://doi.org/10.1158/2767-9764.CRC-24-0316"
-PETLJAK_URL = "https://www.cell.com/cell/fulltext/S0092-8674(19)30161-8"
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
 
 NO_CAPTCHA_CATALOG_URL = "https://depmap.org/portal/api/no-captcha/download/files"
-# Same table as the no-captcha catalog, plus signed download URLs. Cloudflare
-# serves an HTML check to scripts, so this often has to be saved in a browser.
+# Portal catalog with signed URLs. A browser save replaces metadata/downloads.csv.
 CATALOG_URL = "https://depmap.org/portal/api/download/files"
 
-# CloudFront signature expires (Expires=1793322017). Re-download Table S5 from HRD_DOI if this fails.
-HRD_XLSX_URL = (
-    "https://aacr.silverchair-cdn.com/aacr/content_public/journal/cancerrescommun/4/12/"
-    "10.1158_2767-9764.crc-24-0316/3/crc-24-0316_table_s5_suppst5.xlsx"
-    "?Expires=1793322017"
-    "&Signature=VVi7au32va6IG5eXuchODZtHeCRzyYJaODCHqt-fhLWUQvXyfv36QpbpYDN62tcns87zoYcnJZADJt9cuCGXqEhyor~gWaAy7k69mx88cNFGzMjMB5-OIAdjuqwhhHmo2yVNbX1~2zBrA7ezlnWRDwGumEsdlPNsr5~Ltrv7tv8HZ1f8cJy~JVUk86E25Nxt1cC2R4agexYzNuK3i2w8psnA7OSFWkRxGzEb7yhPNMD-3mkpEVux1OcuG5y~MgDkP4d0LXX7kCHz4GApNJCCpZo8QX2PD98VhclBPpJil6eZmO9c~omu03exB-Zr1cwSI-Vt22MxVSRVJ-CJwuGEew__"
-    "&Key-Pair-Id=APKAIE5G5CRDK6RD3PGA"
-)
-
-HRD_RAW_NAME = "crc-24-0316_table_s5_suppst5.xlsx"
-PETLJAK_RAW_NAME = "petljak2019_mmc1.xlsx"
 FEATURES_FILENAME = "final_depmap_features_26Q1.parquet.gz"
 
 HRD_SCORE_CUTOFF = 42
@@ -38,30 +27,51 @@ LOF_CLASSES = (
 )
 
 DEFAULT_DEPMAP_RELEASE = "26Q1"
-BUNDLED_CATALOG_NAME = "downloads.csv"
+# In metadata/depmap_files.csv this release token follows --depmap-release.
+DEPMAP_RELEASE_TOKEN = "{depmap}"
 
-# Filenames taken from one DepMap Public quarter. Older quarters omit some of these.
-DEPMAP_FILENAMES = (
-    "Model.csv",
-    "Gene.csv",
-    "OmicsProfiles.csv",
-    "CRISPRGeneEffect.csv",
-    "OmicsCNGeneWGS.csv",
-    "OmicsSomaticMutations.csv",
-    "OmicsSomaticMutationsMatrixHotspot.csv",
-    "OmicsSomaticMutationsMatrixDamaging.csv",
-    "OmicsExpressionTPMLogp1HumanProteinCodingGenes.csv",
-    "OmicsFusionFiltered.csv",
-    "OmicsGlobalSignatures.csv",
-    "OmicsCNGeneMC_WES.csv",
-)
 
-# Releases that are not tied to the --depmap-release quarter.
-OTHER_PINNED_FILES = (
-    ("DEMETER2 Data v6", "D2_combined_gene_dep_scores.csv"),
-    ("Sanger GDSC1 and GDSC2", "sanger-dose-response.csv"),
-    ("Sanger GDSC1 and GDSC2", "sanger-viability.csv"),
-    ("Harmonized Public Proteomics 26Q1", "harmonized_Sanger_MS_2022.csv"),
-    ("Harmonized Public Proteomics 26Q1", "harmonized_MS_CCLE_Gygi.csv"),
-    ("Harmonized Public Proteomics 26Q1", "harmonized_RPPA_CCLE.csv"),
-)
+def metadata_dir() -> Path:
+    """Directory of downloads.csv, depmap_files.csv, and additional.csv."""
+    candidates = [
+        Path(__file__).resolve().parents[2] / "metadata",
+        Path.cwd() / "metadata",
+    ]
+    for path in candidates:
+        if (path / "downloads.csv").is_file() and (path / "depmap_files.csv").is_file():
+            return path
+    searched = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"metadata directory not found. Looked in: {searched}")
+
+
+def _read_metadata_csv(name: str) -> pd.DataFrame:
+    path = metadata_dir() / name
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame.columns = [str(column).strip() for column in frame.columns]
+    return frame
+
+
+def load_depmap_files() -> pd.DataFrame:
+    """Rows of release and filename to pull from metadata/downloads.csv."""
+    frame = _read_metadata_csv("depmap_files.csv")
+    for column in ("release", "filename"):
+        if column not in frame.columns:
+            raise ValueError(f"metadata/depmap_files.csv is missing column {column!r}")
+    return frame
+
+
+def load_additional() -> pd.DataFrame:
+    """Publication files that are not rows in the DepMap catalog."""
+    frame = _read_metadata_csv("additional.csv")
+    for column in ("id", "local_filename", "url", "citation", "download"):
+        if column not in frame.columns:
+            raise ValueError(f"metadata/additional.csv is missing column {column!r}")
+    return frame
+
+
+def additional_record(record_id: str) -> pd.Series:
+    frame = load_additional()
+    hit = frame[frame["id"] == record_id]
+    if hit.empty:
+        raise KeyError(f"metadata/additional.csv has no id {record_id!r}")
+    return hit.iloc[0]

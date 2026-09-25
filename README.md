@@ -16,25 +16,20 @@ Processed files go in `data/` (override with `KOPREDICT_DATA_DIR`). Raw download
 
 ### 1. DepMap catalog
 
-`data/raw/downloads.csv` is the DepMap file list, including signed download URLs. Those URLs expire. Download a fresh copy from [https://depmap.org/portal/api/download/files](https://depmap.org/portal/api/download/files) in a browser and replace `data/raw/downloads.csv` with that file before running the download, and again whenever a link starts failing.
+`metadata/downloads.csv` is the DepMap file list, including signed download URLs. Those URLs expire. Download a fresh copy from [https://depmap.org/portal/api/download/files](https://depmap.org/portal/api/download/files) in a browser and replace `metadata/downloads.csv` with that file before running the download, and again whenever a link starts failing.
+
+`metadata/depmap_files.csv` lists which rows of that catalog to download. A release value of `{depmap}` follows `--depmap-release`. Other rows, such as DEMETER2, GDSC, and proteomics, keep the release name written in the CSV. Add or remove files there rather than in the Python code.
+
+`metadata/additional.csv` lists workbooks that are not in the DepMap catalog. Each row has a local filename, a citation, a file URL, and whether `kopredict-download` should fetch it. The HRD table and the somatic-signature workbook are both downloaded from those URLs. If a publisher returns a browser check instead of the file, the command tells you to save that same URL by hand.
 
 ```bash
 kopredict-download
 kopredict-download --depmap-release 25Q3
 ```
 
-`--depmap-release` selects the DepMap Public quarter (default `26Q1`). Pass a label such as `26Q1` or `25Q3`. The command checks that every required DepMap filename exists in that release and stops with an error when one does not. Older quarters often use different copy-number and expression filenames. DEMETER2, GDSC, and proteomics files are not tied to that quarter.
+`--depmap-release` selects the DepMap Public quarter (default `26Q1`). Pass a label such as `26Q1` or `25Q3`. The command checks that every `{depmap}` filename exists in that release and stops with an error when one does not. Older quarters often use different copy-number and expression filenames.
 
-Pinned DepMap filenames: `Model.csv`, `Gene.csv`, `OmicsProfiles.csv`, `CRISPRGeneEffect.csv`, `OmicsCNGeneWGS.csv`, `OmicsSomaticMutations.csv`, `OmicsSomaticMutationsMatrixHotspot.csv`, `OmicsSomaticMutationsMatrixDamaging.csv`, `OmicsExpressionTPMLogp1HumanProteinCodingGenes.csv`, `OmicsFusionFiltered.csv`, `OmicsGlobalSignatures.csv`, `OmicsCNGeneMC_WES.csv`.
-- DEMETER2 Data v6: `D2_combined_gene_dep_scores.csv`
-- Sanger GDSC1 and GDSC2: `sanger-dose-response.csv`, `sanger-viability.csv`
-- Harmonized Public Proteomics 26Q1: `harmonized_Sanger_MS_2022.csv`, `harmonized_MS_CCLE_Gygi.csv`, `harmonized_RPPA_CCLE.csv`
-
-It also tries to download the HRD workbook to `data/raw/crc-24-0316_table_s5_suppst5.xlsx`. If that signed link has expired, save Supplementary Table S5 from [10.1158/2767-9764.CRC-24-0316](https://doi.org/10.1158/2767-9764.CRC-24-0316) at that path. The score used is `hrdsum_summary` when it is present, otherwise `hrdsum_broad`. A score of 42 or higher is the high-HRD feature.
-
-### 2. Mutational signatures
-
-Save the Petljak et al. supplementary workbook ([Cell 2019](https://www.cell.com/cell/fulltext/S0092-8674(19)30161-8)) as `data/raw/petljak2019_mmc1.xlsx`. PMC blocks a scripted download. An exposure greater than 0 becomes a `{signature}_True` feature. Sample names are matched to DepMap models by stripped cell-line name.
+The HRD score used is `hrdsum_summary` when it is present, otherwise `hrdsum_broad`. A score of 42 or higher is the high-HRD feature. An exposure greater than 0 becomes a `{signature}_True` feature. Sample names are matched to DepMap models by stripped cell-line name.
 
 GDSC dose-response and viability are downloaded and left in `data/raw/`. Drug-response search is not implemented yet.
 

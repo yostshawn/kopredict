@@ -16,13 +16,10 @@ import pyarrow.parquet as pq
 from kopredict.local_data import clear_load_caches, get_data_dir
 from kopredict.sources import (
     FEATURES_FILENAME,
-    HRD_DOI,
-    HRD_RAW_NAME,
     HRD_SCORE_CUTOFF,
     LOF_CLASSES,
-    PETLJAK_RAW_NAME,
-    PETLJAK_URL,
     ZSCORE_CUTOFF,
+    additional_record,
 )
 
 _FILE_MODELS = "Model_and_OmicsSignatures.parquet.gz"
@@ -197,7 +194,7 @@ def choose_hrd_score(hrd: pd.DataFrame) -> pd.Series:
     frame = hrd.copy()
     frame.columns = [str(c).strip().lower().replace(" ", "") for c in frame.columns]
     if "depmap_id" not in frame.columns:
-        raise ValueError(f"HRD table has no DepMap_ID column ({HRD_DOI}).")
+        raise ValueError(f"HRD table has no DepMap_ID column ({additional_record('hrd')['citation']}).")
     summary = pd.to_numeric(frame["hrdsum_summary"], errors="coerce") if "hrdsum_summary" in frame.columns else None
     broad = pd.to_numeric(frame["hrdsum_broad"], errors="coerce") if "hrdsum_broad" in frame.columns else None
     if summary is None and broad is None:
@@ -216,7 +213,9 @@ def read_hrd_table(path: Path) -> pd.DataFrame:
         if "depmap_id" in columns and ("hrdsum_summary" in columns or "hrdsum_broad" in columns):
             frame.columns = [str(c).strip().lower() for c in frame.columns]
             return frame
-    raise ValueError(f"Could not find HRD columns in {path} ({HRD_DOI}).")
+    raise ValueError(
+        f"Could not find HRD columns in {path} ({additional_record('hrd')['citation']})."
+    )
 
 
 def load_sbs_exposures(path: Path) -> pd.DataFrame:
@@ -233,7 +232,8 @@ def load_sbs_exposures(path: Path) -> pd.DataFrame:
                 full = pd.read_excel(book, sheet_name=sheet, header=header)
                 return _exposures_from_sheet(full)
     raise ValueError(
-        f"No SBS exposure sheet in {path}. Download Supplementary data from {PETLJAK_URL}."
+        "No SBS exposure sheet in "
+        f"{path}. Download supplementary data from {additional_record('somatic_signatures')['citation']}."
     )
 
 
@@ -650,8 +650,10 @@ def prepare(data_dir: Path | None = None) -> None:
     models_raw = _read_csv(_raw(data_dir, "Model.csv"))
     genes = _read_csv(_raw(data_dir, "Gene.csv"))
     profiles = _read_csv(_raw(data_dir, "OmicsProfiles.csv"))
-    hrd = read_hrd_table(_raw(data_dir, HRD_RAW_NAME))
-    sbs = load_sbs_exposures(_raw(data_dir, PETLJAK_RAW_NAME))
+    hrd = read_hrd_table(_raw(data_dir, str(additional_record("hrd")["local_filename"])))
+    sbs = load_sbs_exposures(
+        _raw(data_dir, str(additional_record("somatic_signatures")["local_filename"]))
+    )
 
     model_col = _find_column(models_raw.columns, ("modelid", "depmapid"))
     if model_col is None:

@@ -14,17 +14,13 @@ import pandas as pd
 
 from kopredict.local_data import get_data_dir
 from kopredict.sources import (
-    BUNDLED_CATALOG_NAME,
     CATALOG_URL,
     DEFAULT_DEPMAP_RELEASE,
-    DEPMAP_FILENAMES,
-    HRD_DOI,
-    HRD_RAW_NAME,
-    HRD_XLSX_URL,
+    DEPMAP_RELEASE_TOKEN,
     NO_CAPTCHA_CATALOG_URL,
-    OTHER_PINNED_FILES,
-    PETLJAK_RAW_NAME,
-    PETLJAK_URL,
+    load_additional,
+    load_depmap_files,
+    metadata_dir,
 )
 
 
@@ -92,14 +88,24 @@ def depmap_release_label(token: str, catalog: pd.DataFrame) -> str:
 
 
 def files_for_release(depmap_release: str) -> tuple[tuple[str, str], ...]:
-    depmap = tuple((depmap_release, name) for name in DEPMAP_FILENAMES)
-    return depmap + OTHER_PINNED_FILES
+    """Expand metadata/depmap_files.csv, substituting the selected DepMap quarter."""
+    rows = []
+    for _, row in load_depmap_files().iterrows():
+        release = str(row["release"]).strip()
+        if release == DEPMAP_RELEASE_TOKEN:
+            release = depmap_release
+        filename = str(row["filename"]).strip()
+        if release and filename:
+            rows.append((release, filename))
+    if not rows:
+        raise SystemExit("metadata/depmap_files.csv has no files to download.")
+    return tuple(rows)
 
 
 def require_catalog_files(catalog: pd.DataFrame, depmap_release: str) -> tuple[tuple[str, str], ...]:
     if "url" not in catalog.columns:
         raise SystemExit(
-            "Catalog has no url column. Replace data/raw/downloads.csv with a fresh save of "
+            "Catalog has no url column. Replace metadata/downloads.csv with a fresh save of "
             f"{CATALOG_URL}."
         )
     wanted = files_for_release(depmap_release)
@@ -156,22 +162,46 @@ def download_pinned(catalog_path: Path, data_dir: Path, depmap_release: str) -> 
         print(f"Saved {dest}")
 
 
-def download_hrd(data_dir: Path) -> None:
-    dest = _raw_dir(data_dir) / HRD_RAW_NAME
-    if dest.is_file() and dest.stat().st_size > 1000:
-        print(f"OK {dest.name} already present")
-        return
-    print(f"Downloading HRD Table S5 ({HRD_DOI})")
-    try:
-        _fetch(HRD_XLSX_URL, dest)
-    except Exception as exc:
-        print(
-            f"WARNING: HRD download failed ({exc}). Save Supplementary Table S5 from {HRD_DOI} "
-            f"to {dest}",
-            file=sys.stderr,
-        )
-        return
-    print(f"Saved {dest}")
+def download_additional(data_dir: Path) -> None:
+    """Fetch publication files listed in metadata/additional.csv."""
+    raw = _raw_dir(data_dir)
+    for _, row in load_additional().iterrows():
+        dest = raw / str(row["local_filename"]).strip()
+        citation = str(row["citation"]).strip()
+        url = str(row["url"]).strip()
+        auto = str(row["download"]).strip().lower() in {"yes", "true", "1", "y"}
+        if not auto:
+            print(
+                f"{row['id']}: save the workbook from {citation} to {dest}"
+            )
+            continue
+        if dest.is_file() and dest.stat().st_size > 1000:
+            print(f"OK {dest.name} already present")
+            continue
+        if not url:
+            print(
+                f"WARNING: {row['id']} is marked for download but has no url. Save it from {citation} to {dest}",
+                file=sys.stderr,
+            )
+            continue
+        print(f"Downloading {row['id']} ({citation})")
+        try:
+            _fetch(url, dest)
+        except Exception as exc:
+            print(
+                f"WARNING: {row['id']} download failed ({exc}). Save it from {url} to {dest}",
+                file=sys.stderr,
+            )
+            continue
+        head = dest.read_bytes()[:200].lstrip().lower()
+        if head.startswith(b"<") or b"html" in head[:80] or not head.startswith(b"pk"):
+            dest.unlink(missing_ok=True)
+            print(
+                f"WARNING: {row['id']} URL did not return a workbook. Save it from {url} to {dest}",
+                file=sys.stderr,
+            )
+            continue
+        print(f"Saved {dest}")
 
 
 def _catalog_has_urls(path: Path) -> bool:
@@ -203,10 +233,8 @@ def fetch_url_catalog(data_dir: Path) -> Path | None:
 
 
 def bundled_catalog(data_dir: Path) -> Path | None:
-    candidates = [
-        data_dir / "raw" / BUNDLED_CATALOG_NAME,
-        Path(__file__).resolve().parents[2] / "data" / "raw" / BUNDLED_CATALOG_NAME,
-    ]
+    del data_dir
+    candidates = [metadata_dir() / "downloads.csv"]
     for path in candidates:
         if path.is_file() and _catalog_has_urls(path):
             return path
@@ -216,7 +244,7 @@ def bundled_catalog(data_dir: Path) -> Path | None:
 def _catalog_instructions() -> str:
     return (
         "No catalog with download URLs was found. "
-        f"Open {CATALOG_URL} in a browser, complete the check, and replace data/raw/downloads.csv "
+        f"Open {CATALOG_URL} in a browser, complete the check, and replace metadata/downloads.csv "
         "with that file. Signed URLs expire, so replace it with a fresh download when fetches fail."
     )
 
@@ -237,7 +265,7 @@ def main(argv: list[str] | None = None) -> None:
         "--catalog",
         default=None,
         help=(
-            "CSV from the DepMap download-URL catalog. Default: data/raw/downloads.csv. "
+            "CSV from the DepMap download-URL catalog. Default: metadata/downloads.csv. "
             "Replace that file with a fresh browser save when the signed URLs expire."
         ),
     )
@@ -267,12 +295,7 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(_catalog_instructions())
         print(f"Using catalog {catalog}")
     download_pinned(catalog, data_dir, args.depmap_release)
-    download_hrd(data_dir)
-    petljak = data_dir / "raw" / PETLJAK_RAW_NAME
-    print(
-        f"Petljak signature workbook is not downloaded automatically ({PETLJAK_URL}). "
-        f"Save mmc1.xlsx to {petljak}"
-    )
+    download_additional(data_dir)
 
 
 if __name__ == "__main__":
