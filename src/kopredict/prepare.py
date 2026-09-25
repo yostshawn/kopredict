@@ -13,15 +13,19 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from kopredict.download import verify_downloaded_files
+from kopredict.download import DEFAULT_DEPMAP_RELEASE, verify_downloaded_files
 from kopredict.local_data import clear_load_caches, get_data_dir
-from kopredict.sources import DEFAULT_DEPMAP_RELEASE
-from kopredict.sources import (
-    FEATURES_FILENAME,
-    HRD_SCORE_CUTOFF,
-    LOF_CLASSES,
-    ZSCORE_CUTOFF,
-    additional_record,
+from kopredict.sources import additional_record
+
+FEATURES_FILENAME = "final_depmap_features_26Q1.parquet.gz"
+HRD_SCORE_CUTOFF = 42
+ZSCORE_CUTOFF = 1.64
+LOF_CLASSES = (
+    "Nonsense_Mutation",
+    "Frame_Shift_Del",
+    "Frame_Shift_Ins",
+    "Splice_Site",
+    "Nonstop_Mutation",
 )
 
 _FILE_MODELS = "Model_and_OmicsSignatures.parquet.gz"
@@ -609,7 +613,10 @@ def _write_omics_long(path: Path, columns: list[str], frames: dict[str, pd.DataF
     string_cols = {"cnv_call"}
     writer = None
     try:
+        print(f"  Writing long omics table for {len(genes)} genes and {len(columns)} cell lines")
         for start in range(0, len(genes), 400):
+            if start == 0 or (start // 400) % 25 == 0:
+                print(f"  Omics rows {start + 1}-{min(start + 400, len(genes))} of {len(genes)}")
             chunk_genes = genes[start : start + 400]
             melted = None
             for name, frame in frames.items():
@@ -642,22 +649,72 @@ def _write_omics_long(path: Path, columns: list[str], frames: dict[str, pd.DataF
         pd.DataFrame(columns=schema_names).to_parquet(path, compression="gzip", index=False)
 
 
+class _Tee:
+    """Write each print to the terminal and a log file."""
+
+    def __init__(self, stream, handle):
+        self.stream = stream
+        self.handle = handle
+
+    def write(self, data: str) -> int:
+        self.stream.write(data)
+        self.handle.write(data)
+        self.handle.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        self.stream.flush()
+        self.handle.flush()
+
+
+def _shape(frame: pd.DataFrame) -> str:
+    if frame is None or frame.empty:
+        return "empty"
+    return f"{frame.shape[0]} rows x {frame.shape[1]} columns"
+
+
 def prepare(data_dir: Path | None = None, depmap_release: str = DEFAULT_DEPMAP_RELEASE) -> None:
     if data_dir is not None:
         os.environ["KOPREDICT_DATA_DIR"] = str(data_dir)
         clear_load_caches()
     data_dir = get_data_dir()
-    print(f"Checking raw inputs in {data_dir / 'raw'}")
-    verify_downloaded_files(data_dir, depmap_release)
-    print(f"Preparing inputs in {data_dir}")
+    log_path = data_dir / "prepare.log"
+    log_handle = log_path.open("w", encoding="utf-8")
+    previous_stdout, previous_stderr = sys.stdout, sys.stderr
+    sys.stdout = _Tee(previous_stdout, log_handle)
+    sys.stderr = _Tee(previous_stderr, log_handle)
+    try:
+        _prepare_logged(data_dir, depmap_release, log_path)
+    except SystemExit as exc:
+        if str(exc):
+            print(exc, file=sys.stderr)
+        raise SystemExit(1) from None
+    finally:
+        sys.stdout = previous_stdout
+        sys.stderr = previous_stderr
+        log_handle.close()
 
+
+def _prepare_logged(data_dir: Path, depmap_release: str, log_path: Path) -> None:
+    print(f"Log file: {log_path}")
+    print(f"DepMap release: {depmap_release}")
+    print(f"Step 1/6: checking raw inputs in {data_dir / 'raw'}")
+    verify_downloaded_files(data_dir, depmap_release)
+    print("Step 1/6: all required files are present and checksums match.")
+
+    print("Step 2/6: reading Model.csv, Gene.csv, OmicsProfiles.csv, HRD, and SBS exposures")
     models_raw = _read_csv(_raw(data_dir, "Model.csv"))
+    print(f"  Model.csv: {_shape(models_raw)}")
     genes = _read_csv(_raw(data_dir, "Gene.csv"))
+    print(f"  Gene.csv: {_shape(genes)}")
     profiles = _read_csv(_raw(data_dir, "OmicsProfiles.csv"))
+    print(f"  OmicsProfiles.csv: {_shape(profiles)}")
     hrd = read_hrd_table(_raw(data_dir, str(additional_record("hrd")["local_filename"])))
+    print(f"  HRD table: {_shape(hrd)}")
     sbs = load_sbs_exposures(
         _raw(data_dir, str(additional_record("somatic_signatures")["local_filename"]))
     )
+    print(f"  SBS exposures: {_shape(sbs)}")
 
     model_col = _find_column(models_raw.columns, ("modelid", "depmapid"))
     if model_col is None:
@@ -668,11 +725,17 @@ def prepare(data_dir: Path | None = None, depmap_release: str = DEFAULT_DEPMAP_R
     staged = staged.rename(columns={"modelid": "cellline"})
     name_to_model = build_name_to_model(staged)
     profile_map = profile_to_model_map(profiles)
+    print(f"  {len(model_ids)} model IDs; {len(name_to_model)} name aliases; {len(profile_map)} omics profiles.")
 
-    print("Loading copy-number, mutations, expression, and dependency matrices...")
+    print("Step 3/6: loading copy number, mutations, expression, dependency, and proteomics")
+    print("  Reading OmicsCNGeneWGS.csv")
     wgs = orient_gene_by_model(_read_csv(_raw(data_dir, "OmicsCNGeneWGS.csv")), model_ids, name_to_model, profile_map)
+    print(f"  WGS copy number: {_shape(wgs)}")
+    print("  Reading OmicsCNGeneMC_WES.csv")
     wes = orient_gene_by_model(_read_csv(_raw(data_dir, "OmicsCNGeneMC_WES.csv")), model_ids, name_to_model, profile_map)
+    print(f"  WES copy number: {_shape(wes)}")
     cn = wgs.combine_first(wes) if not wes.empty else wgs
+    print(f"  Combined copy number: {_shape(cn)}")
     signatures = _read_csv(_raw(data_dir, "OmicsGlobalSignatures.csv"))
     sig_preview = signatures.copy()
     sig_preview.columns = [str(c).lower().replace(" ", "") for c in sig_preview.columns]
@@ -682,15 +745,24 @@ def prepare(data_dir: Path | None = None, depmap_release: str = DEFAULT_DEPMAP_R
         ploidy = pd.to_numeric(sig_preview.set_index(sid)["ploidy"], errors="coerce")
         ploidy.index = ploidy.index.astype(str)
     cn_log = to_log2_ratio(cn, ploidy)
+    print(f"  Log2 copy-number matrix: {_shape(cn_log)}")
 
+    print("  Reading damaging and hotspot mutation matrices")
     damaging = orient_gene_by_model(
         _read_csv(_raw(data_dir, "OmicsSomaticMutationsMatrixDamaging.csv")), model_ids, name_to_model, profile_map, binary=True
     )
     hotspot = orient_gene_by_model(
         _read_csv(_raw(data_dir, "OmicsSomaticMutationsMatrixHotspot.csv")), model_ids, name_to_model, profile_map, binary=True
     )
+    print(f"  Damaging mutations: {_shape(damaging)}")
+    print(f"  Hotspot mutations: {_shape(hotspot)}")
+    print("  Reading OmicsSomaticMutations.csv for likely loss-of-function")
     lof = lof_mask(_read_csv(_raw(data_dir, "OmicsSomaticMutations.csv")), model_ids)
+    print(f"  Likely LoF: {_shape(lof)}")
+    print("  Reading OmicsFusionFiltered.csv")
     pair_fusions, gene_fusions = fusion_tables(_read_csv(_raw(data_dir, "OmicsFusionFiltered.csv")), model_ids)
+    print(f"  Fusion pairs: {_shape(pair_fusions)}; genes in a fusion: {_shape(gene_fusions)}")
+    print("  Reading expression, CRISPR, RNAi, and proteomics")
     expr = orient_gene_by_model(
         _read_csv(_raw(data_dir, "OmicsExpressionTPMLogp1HumanProteinCodingGenes.csv")),
         model_ids,
@@ -704,15 +776,26 @@ def prepare(data_dir: Path | None = None, depmap_release: str = DEFAULT_DEPMAP_R
     sanger = read_protein_matrix(_raw(data_dir, "harmonized_Sanger_MS_2022.csv"), model_ids, name_to_model, genes)
     gygi = read_protein_matrix(_raw(data_dir, "harmonized_MS_CCLE_Gygi.csv"), model_ids, name_to_model, genes)
     rppa = read_protein_matrix(_raw(data_dir, "harmonized_RPPA_CCLE.csv"), model_ids, name_to_model, genes)
+    print(f"  Expression: {_shape(expr)}")
+    print(f"  CRISPR: {_shape(crispr)}")
+    print(f"  RNAi: {_shape(rnai)}")
+    print(f"  Sanger proteomics: {_shape(sanger)}")
+    print(f"  Gygi proteomics: {_shape(gygi)}")
+    print(f"  RPPA: {_shape(rppa)}")
 
-    print("Writing model, dependency, and omics tables...")
+    print("Step 4/6: writing model metadata and CRISPR/RNAi dependency tables")
     model_table = _engineer_models(models_raw, signatures, hrd, sbs, name_to_model)
     model_table.columns = [str(c).lower() for c in model_table.columns]
     model_table.to_parquet(data_dir / _FILE_MODELS, compression="gzip", index=False)
+    print(f"  Wrote {_FILE_MODELS}: {_shape(model_table)}")
 
     cancer_lines = list(dict.fromkeys(_cancer_models(model_table)))
+    print(f"  Cancer models kept for features: {len(cancer_lines)}")
     _write_dependency(crispr.reindex(columns=cancer_lines), data_dir / _FILE_CRISPR)
+    print(f"  Wrote {_FILE_CRISPR}")
     _write_dependency(rnai.reindex(columns=cancer_lines), data_dir / _FILE_RNAI)
+    print(f"  Wrote {_FILE_RNAI}")
+    print("Step 5/6: building per-gene calls and the long omics table")
 
     amp = cn_log >= 1
     homdel = cn_log <= -1
@@ -761,9 +844,11 @@ def prepare(data_dir: Path | None = None, depmap_release: str = DEFAULT_DEPMAP_R
         omics_frames["depmap_proteomics_zscore"] = gygi_z
     if not rppa_z.empty:
         omics_frames["rppa_zscore"] = rppa_z
+    print(f"  Omics columns: {', '.join(omics_frames)}")
     _write_omics_long(data_dir / _FILE_OMICS, cancer_lines, omics_frames)
+    print(f"  Wrote {_FILE_OMICS}")
 
-    print("Building the binary feature matrix...")
+    print("Step 6/6: building the binary feature matrix")
     blocks = []
     model_indexed = model_table.set_index("cellline")
     for column in _METADATA_COLUMNS:
@@ -798,9 +883,14 @@ def prepare(data_dir: Path | None = None, depmap_release: str = DEFAULT_DEPMAP_R
     blocks.append(_suffix_features(altered.reindex(columns=cancer_lines), "altered"))
 
     features = pd.concat([block for block in blocks if block is not None and not block.empty], axis=0)
+    print(f"  Feature blocks combined: {_shape(features)}")
     features = features.loc[:, [c for c in cancer_lines if c in features.columns]]
+    before_constant = len(features)
     features = _drop_constant_rows(features)
+    print(f"  Dropped {before_constant - len(features)} constant feature rows")
+    before_dedupe = len(features)
     features = dedupe_identical_rows(features)
+    print(f"  Merged identical rows: {before_dedupe} -> {len(features)}")
     features.index.name = "feature"
     out_features = data_dir / FEATURES_FILENAME
     features.to_parquet(out_features, compression="gzip", index=True)

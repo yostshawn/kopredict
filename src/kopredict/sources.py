@@ -10,25 +10,6 @@ from pathlib import Path
 
 import pandas as pd
 
-# Portal catalog with signed URLs. A browser save replaces metadata/downloads.csv.
-#CATALOG_URL = "https://depmap.org/portal/api/download/files"
-
-FEATURES_FILENAME = "final_depmap_features_26Q1.parquet.gz"
-
-HRD_SCORE_CUTOFF = 42
-ZSCORE_CUTOFF = 1.64
-LOF_CLASSES = (
-    "Nonsense_Mutation",
-    "Frame_Shift_Del",
-    "Frame_Shift_Ins",
-    "Splice_Site",
-    "Nonstop_Mutation",
-)
-
-DEFAULT_DEPMAP_RELEASE = "26Q1"
-# In metadata/depmap_files.csv this release token follows --depmap-release.
-DEPMAP_RELEASE_TOKEN = "{depmap}"
-
 
 def metadata_dir() -> Path:
     """Directory of downloads.csv, depmap_files.csv, and additional.csv."""

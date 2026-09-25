@@ -26,7 +26,7 @@ from kopredict.permutation import estimate_significant_pvalue_cutoff
 from kopredict.pipeline import run_prediction_for_biomarker_given_target_dataset
 from kopredict.local_data import get_data_dir
 from kopredict.plotting import create_boxplot, create_oncoplot
-from kopredict.sources import FEATURES_FILENAME
+from kopredict.prepare import FEATURES_FILENAME
 
 
 def _count_essential_cell_lines(

@@ -13,14 +13,13 @@ from pathlib import Path
 import pandas as pd
 
 from kopredict.local_data import get_data_dir
-from kopredict.sources import (
-    CATALOG_URL,
-    DEFAULT_DEPMAP_RELEASE,
-    DEPMAP_RELEASE_TOKEN,
-    load_additional,
-    load_depmap_files,
-    metadata_dir,
-)
+from kopredict.sources import load_additional, load_depmap_files, metadata_dir
+
+# Portal catalog with signed URLs. A browser save replaces metadata/downloads.csv.
+CATALOG_URL = "https://depmap.org/portal/api/download/files"
+DEFAULT_DEPMAP_RELEASE = "26Q1"
+# In metadata/depmap_files.csv this release token follows --depmap-release.
+DEPMAP_RELEASE_TOKEN = "{depmap}"
 
 
 def _raw_dir(data_dir: Path) -> Path:
