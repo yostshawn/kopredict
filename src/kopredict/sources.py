@@ -10,9 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 
-NO_CAPTCHA_CATALOG_URL = "https://depmap.org/portal/api/no-captcha/download/files"
 # Portal catalog with signed URLs. A browser save replaces metadata/downloads.csv.
-CATALOG_URL = "https://depmap.org/portal/api/download/files"
+#CATALOG_URL = "https://depmap.org/portal/api/download/files"
 
 FEATURES_FILENAME = "final_depmap_features_26Q1.parquet.gz"
 

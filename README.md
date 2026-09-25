@@ -37,7 +37,10 @@ GDSC dose-response and viability are downloaded and left in `data/raw/`. Drug-re
 
 ```bash
 kopredict-prepare
+kopredict-prepare --depmap-release 25Q3
 ```
+
+This first checks every file in `metadata/depmap_files.csv` and `metadata/additional.csv`. A missing file, a missing `md5_hash` for a catalog file, or a checksum that does not match stops the command and lists each problem. Use the same `--depmap-release` value you used for `kopredict-download`.
 
 This writes:
 

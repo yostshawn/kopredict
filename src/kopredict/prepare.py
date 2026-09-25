@@ -13,7 +13,9 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from kopredict.download import verify_downloaded_files
 from kopredict.local_data import clear_load_caches, get_data_dir
+from kopredict.sources import DEFAULT_DEPMAP_RELEASE
 from kopredict.sources import (
     FEATURES_FILENAME,
     HRD_SCORE_CUTOFF,
@@ -640,11 +642,13 @@ def _write_omics_long(path: Path, columns: list[str], frames: dict[str, pd.DataF
         pd.DataFrame(columns=schema_names).to_parquet(path, compression="gzip", index=False)
 
 
-def prepare(data_dir: Path | None = None) -> None:
+def prepare(data_dir: Path | None = None, depmap_release: str = DEFAULT_DEPMAP_RELEASE) -> None:
     if data_dir is not None:
         os.environ["KOPREDICT_DATA_DIR"] = str(data_dir)
         clear_load_caches()
     data_dir = get_data_dir()
+    print(f"Checking raw inputs in {data_dir / 'raw'}")
+    verify_downloaded_files(data_dir, depmap_release)
     print(f"Preparing inputs in {data_dir}")
 
     models_raw = _read_csv(_raw(data_dir, "Model.csv"))
@@ -807,8 +811,20 @@ def prepare(data_dir: Path | None = None) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Build kopredict parquet inputs from data/raw.")
     parser.add_argument("--data-dir", default=None, help="Processed output directory (raw files are data/raw).")
+    parser.add_argument(
+        "--depmap-release",
+        default=DEFAULT_DEPMAP_RELEASE,
+        metavar="QUARTER",
+        help=(
+            "DepMap Public quarter used to check raw files against metadata/downloads.csv "
+            f"(default: {DEFAULT_DEPMAP_RELEASE}). Use the same value passed to kopredict-download."
+        ),
+    )
     args = parser.parse_args(argv)
-    prepare(Path(args.data_dir).expanduser().resolve() if args.data_dir else None)
+    prepare(
+        Path(args.data_dir).expanduser().resolve() if args.data_dir else None,
+        depmap_release=args.depmap_release,
+    )
 
 
 if __name__ == "__main__":

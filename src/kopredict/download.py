@@ -17,7 +17,6 @@ from kopredict.sources import (
     CATALOG_URL,
     DEFAULT_DEPMAP_RELEASE,
     DEPMAP_RELEASE_TOKEN,
-    NO_CAPTCHA_CATALOG_URL,
     load_additional,
     load_depmap_files,
     metadata_dir,
@@ -36,6 +35,20 @@ def _md5(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _already_valid(dest: Path, expected_md5: str) -> bool:
+    """True when dest exists and its md5 matches. Mismatches are downloaded again."""
+    if not dest.is_file():
+        return False
+    if not expected_md5:
+        raise SystemExit(f"{dest.name} is present but the catalog has no md5_hash to check.")
+    actual = _md5(dest)
+    if actual == expected_md5:
+        print(f"OK {dest.name} (exists, md5 matches)")
+        return True
+    print(f"{dest.name} exists but md5 does not match; downloading again.")
+    return False
 
 
 def _fetch(url: str, dest: Path) -> None:
@@ -125,14 +138,6 @@ def require_catalog_files(catalog: pd.DataFrame, depmap_release: str) -> tuple[t
 
 def download_pinned(catalog_path: Path, data_dir: Path, depmap_release: str) -> None:
     raw = _raw_dir(data_dir)
-    public = None
-    print(f"Fetching filename catalog {NO_CAPTCHA_CATALOG_URL}")
-    catalog_check_path = raw / "depmap_no_captcha_catalog.csv"
-    try:
-        _fetch(NO_CAPTCHA_CATALOG_URL, catalog_check_path)
-        public = _load_catalog(catalog_check_path)
-    except Exception as exc:
-        print(f"Could not refresh the open filename catalog ({exc}). Using checksums from {catalog_path}.")
     user = _load_catalog(catalog_path)
     release = depmap_release_label(depmap_release, user)
     pinned = require_catalog_files(user, release)
@@ -147,19 +152,65 @@ def download_pinned(catalog_path: Path, data_dir: Path, depmap_release: str) -> 
             )
         dest = raw / filename
         expected = str(row.get("md5_hash", "")).strip().lower()
-        if not expected and public is not None:
-            public_row = _lookup(public, release, filename)
-            if public_row is not None:
-                expected = str(public_row.get("md5_hash", "")).strip().lower()
-        if dest.is_file() and expected and _md5(dest) == expected:
-            print(f"OK {filename} (md5 matches)")
+        if not expected:
+            raise SystemExit(
+                f"No md5_hash for {release} / {filename} in {catalog_path}. "
+                "Replace metadata/downloads.csv with a fresh catalog."
+            )
+        if _already_valid(dest, expected):
             continue
         print(f"Downloading {release} / {filename}")
         _fetch(str(row["url"]).strip(), dest)
-        if expected and _md5(dest) != expected:
+        if _md5(dest) != expected:
             dest.unlink(missing_ok=True)
             raise SystemExit(f"md5 mismatch for {filename}; deleted incomplete file.")
         print(f"Saved {dest}")
+
+
+def verify_downloaded_files(data_dir: Path, depmap_release: str, catalog_path: Path | None = None) -> None:
+    """Stop if any input in metadata/depmap_files.csv or additional.csv is missing or mismatched."""
+    catalog_path = catalog_path or (metadata_dir() / "downloads.csv")
+    if not catalog_path.is_file():
+        raise SystemExit(f"Catalog not found: {catalog_path}")
+    catalog = _load_catalog(catalog_path)
+    release = depmap_release_label(depmap_release, catalog)
+    raw = data_dir / "raw"
+    problems: list[str] = []
+
+    for file_release, filename in files_for_release(release):
+        dest = raw / filename
+        row = _lookup(catalog, file_release, filename)
+        if row is None:
+            problems.append(f"{filename}: not listed in {catalog_path.name} for {file_release}")
+            continue
+        expected = str(row.get("md5_hash", "")).strip().lower()
+        if not dest.is_file():
+            problems.append(f"{filename}: missing ({dest}). Run kopredict-download --depmap-release {depmap_release}.")
+            continue
+        if not expected:
+            problems.append(f"{filename}: no md5_hash in {catalog_path.name} for {file_release}")
+            continue
+        actual = _md5(dest)
+        if actual != expected:
+            problems.append(f"{filename}: md5 mismatch (expected {expected}, found {actual})")
+
+    for _, row in load_additional().iterrows():
+        filename = str(row["local_filename"]).strip()
+        dest = raw / filename
+        label = str(row["id"]).strip()
+        if not dest.is_file():
+            problems.append(f"{filename}: missing ({dest}). Listed as {label} in metadata/additional.csv.")
+            continue
+        expected = str(row["md5_hash"]).strip().lower() if "md5_hash" in row.index else ""
+        if expected and _md5(dest) != expected:
+            problems.append(f"{filename}: md5 mismatch (expected {expected}, found {_md5(dest)})")
+
+    if problems:
+        raise SystemExit(
+            "Required input files are missing or do not match their checksums:\n  "
+            + "\n  ".join(problems)
+        )
+    print(f"All input files are present and match md5_hash for {release}.")
 
 
 def download_additional(data_dir: Path) -> None:
@@ -169,15 +220,21 @@ def download_additional(data_dir: Path) -> None:
         dest = raw / str(row["local_filename"]).strip()
         citation = str(row["citation"]).strip()
         url = str(row["url"]).strip()
+        expected = str(row["md5_hash"]).strip().lower() if "md5_hash" in row.index else ""
         auto = str(row["download"]).strip().lower() in {"yes", "true", "1", "y"}
         if not auto:
             print(
                 f"{row['id']}: save the workbook from {citation} to {dest}"
             )
             continue
-        if dest.is_file() and dest.stat().st_size > 1000:
-            print(f"OK {dest.name} already present")
+        if expected and _already_valid(dest, expected):
             continue
+        if dest.is_file() and not expected:
+            head = dest.read_bytes()[:4]
+            if head.startswith(b"PK"):
+                print(f"OK {dest.name} (exists; metadata/additional.csv has no md5_hash)")
+                continue
+            print(f"{dest.name} exists but is not a workbook; downloading again.")
         if not url:
             print(
                 f"WARNING: {row['id']} is marked for download but has no url. Save it from {citation} to {dest}",
@@ -198,6 +255,13 @@ def download_additional(data_dir: Path) -> None:
             dest.unlink(missing_ok=True)
             print(
                 f"WARNING: {row['id']} URL did not return a workbook. Save it from {url} to {dest}",
+                file=sys.stderr,
+            )
+            continue
+        if expected and _md5(dest) != expected:
+            dest.unlink(missing_ok=True)
+            print(
+                f"WARNING: md5 mismatch for {dest.name}. Save it from {url} to {dest}",
                 file=sys.stderr,
             )
             continue
