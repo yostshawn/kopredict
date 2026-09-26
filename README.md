@@ -29,7 +29,7 @@ kopredict-download --depmap-release 25Q3
 
 `--depmap-release` selects the DepMap Public quarter (default `26Q1`). Pass a label such as `26Q1` or `25Q3`. The command checks that every `{depmap}` filename exists in that release and stops with an error when one does not. Older quarters often use different copy-number and expression filenames.
 
-The HRD score used is `hrdsum_summary` when it is present, otherwise `hrdsum_broad`. A score of 42 or higher is the high-HRD feature. On the `COSMIC CellLines Signatures` sheet, an exposure greater than 0 becomes a `{signature}_True` feature. Sample names are matched to DepMap models by stripped cell-line name.
+The HRD score used is `hrdsum_summary` when it is present, otherwise `hrdsum_broad`. A score of 42 or higher is the high-HRD feature. Copy number uses the raw ratio from the WGS or WES file: amplification is a value of at least 2 (`CN_AMP_CUTOFF`), and homozygous deletion is a value below 0.1 (`CN_HOMDEL_CUTOFF`). On the `COSMIC CellLines Signatures` sheet, an exposure greater than 0 becomes a `{signature}_True` feature. Sample names are matched to DepMap models by stripped cell-line name.
 
 GDSC dose-response and viability are downloaded and left in `data/raw/`. Drug-response search is not implemented yet.
 
@@ -53,7 +53,7 @@ This writes:
 | `D2_combined_gene_dep_scores_processed.parquet.gz` | DEMETER2 RNAi scores |
 | `final_depmap_features_26Q1.parquet.gz` | Binary features (rows) by cell line (columns) |
 
-Non-cancer models (`OncotreePrimaryDisease` of `Non-Cancerous`) are omitted from the feature matrix. Gene features use only `Gene.csv` rows whose `locus_group` is `protein-coding gene`. Pseudogenes, non-coding RNAs, and other locus groups are dropped from copy number, mutations, expression, CRISPR, RNAi, and fusions. Proteomics rows stay as UniProt accessions and are not converted to gene symbols. Copy-number amplification is log2 ratio at least 1, and homozygous deletion is log2 ratio at most -1. Expression, Sanger MS, Gygi MS, and RPPA use a per-gene z-score cutoff of 1.64. Likely loss-of-function uses the variant classes Nonsense_Mutation, Frame_Shift_Del, Frame_Shift_Ins, Splice_Site, and Nonstop_Mutation.
+Non-cancer models (`OncotreePrimaryDisease` of `Non-Cancerous`) are omitted from the feature matrix. Gene features use only `Gene.csv` rows whose `locus_group` is `protein-coding gene`. Pseudogenes, non-coding RNAs, and other locus groups are dropped from copy number, mutations, expression, CRISPR, RNAi, and fusions. Proteomics rows stay as UniProt accessions and are not converted to gene symbols. Copy-number amplification is a copy-number value of at least 2 (`CN_AMP_CUTOFF`), and homozygous deletion is a copy-number value below 0.1 (`CN_HOMDEL_CUTOFF`). Expression, Sanger MS, Gygi MS, and RPPA use a per-gene z-score cutoff of 1.64. Likely loss-of-function uses the variant classes Nonsense_Mutation, Frame_Shift_Del, Frame_Shift_Ins, Splice_Site, and Nonstop_Mutation.
 
 These old DataHub feature families are not rebuilt, because the pinned files do not contain them: `has_hessdriver`, `has_oncogenehighimpact`, `has_tumorsuppressorhighimpact`.
 

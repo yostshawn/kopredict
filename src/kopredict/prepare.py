@@ -20,6 +20,8 @@ from kopredict.sources import additional_record
 
 FEATURES_FILENAME = "final_depmap_features_26Q1.parquet.gz"
 HRD_SCORE_CUTOFF = 42
+CN_AMP_CUTOFF = 2
+CN_HOMDEL_CUTOFF = 0.1
 ZSCORE_CUTOFF = 1.64
 LOF_CLASSES = (
     "Nonsense_Mutation",
@@ -428,18 +430,6 @@ def _combine_copy_number(wgs: pd.DataFrame, wes: pd.DataFrame) -> pd.DataFrame:
     )
     print(f"  Combined copy number: {shape(combined)}")
     return combined
-
-
-def to_log2_ratio(cn: pd.DataFrame, ploidy: pd.Series | None) -> pd.DataFrame:
-    values = cn.to_numpy(dtype=float)
-    finite = values[np.isfinite(values)]
-    if finite.size == 0 or np.nanmedian(finite) <= 1.2:
-        return cn.astype("float32")
-    if ploidy is None:
-        scale = pd.Series(2.0, index=cn.columns)
-    else:
-        scale = pd.to_numeric(ploidy.reindex(cn.columns), errors="coerce").fillna(2.0).clip(lower=0.5)
-    return np.log2(cn.div(scale, axis=1).clip(lower=1e-3)).astype("float32")
 
 
 def zscore_rows(matrix: pd.DataFrame) -> pd.DataFrame:
@@ -948,15 +938,6 @@ def _prepare_logged(data_dir: Path, depmap_release: str) -> None:
     print(f"  WES copy number: {shape(wes)}")
     cn = _combine_copy_number(wgs, wes)
     signatures = _read_csv(_raw(data_dir, "OmicsGlobalSignatures.csv"))
-    sig_preview = signatures.copy()
-    sig_preview.columns = [str(c).lower().replace(" ", "") for c in sig_preview.columns]
-    ploidy = None
-    if "ploidy" in sig_preview.columns:
-        sid = "modelid" if "modelid" in sig_preview.columns else sig_preview.columns[0]
-        ploidy = pd.to_numeric(sig_preview.set_index(sid)["ploidy"], errors="coerce")
-        ploidy.index = ploidy.index.astype(str)
-    cn_log = to_log2_ratio(cn, ploidy)
-    print(f"  Log2 copy-number matrix: {shape(cn_log)}")
 
     print("  Reading damaging and hotspot mutation matrices")
     damaging = orient_gene_by_model(
@@ -1011,12 +992,12 @@ def _prepare_logged(data_dir: Path, depmap_release: str) -> None:
     print(f"  Wrote {_FILE_RNAI}")
     print("Step 5/6: building per-gene calls and the long omics table")
 
-    amp = cn_log >= 1
-    homdel = cn_log <= -1
-    known_cn = cn_log.notna()
-    amp_f = pd.DataFrame(np.where(known_cn, amp.astype(float), np.nan), index=cn_log.index, columns=cn_log.columns)
-    hom_f = pd.DataFrame(np.where(known_cn, homdel.astype(float), np.nan), index=cn_log.index, columns=cn_log.columns)
-    cnv_call = pd.DataFrame(index=cn_log.index, columns=cn_log.columns, dtype=object)
+    amp = cn >= CN_AMP_CUTOFF
+    homdel = cn < CN_HOMDEL_CUTOFF
+    known_cn = cn.notna()
+    amp_f = pd.DataFrame(np.where(known_cn, amp.astype(float), np.nan), index=cn.index, columns=cn.columns)
+    hom_f = pd.DataFrame(np.where(known_cn, homdel.astype(float), np.nan), index=cn.index, columns=cn.columns)
+    cnv_call = pd.DataFrame(index=cn.index, columns=cn.columns, dtype=object)
     cnv_call = cnv_call.mask(amp, "Amp")
     cnv_call = cnv_call.mask(homdel, "HomDel")
     cnv_call = cnv_call.where(known_cn)
@@ -1041,7 +1022,7 @@ def _prepare_logged(data_dir: Path, depmap_release: str) -> None:
     altered = (dam_a | hot_a | amp_a | hom_a | fus_a | ko.astype(bool)).astype(float)
 
     omics_frames = {
-        "cnv": cn_log,
+        "cnv": cn,
         "mutdamaging": damaging,
         "muthotspot": hotspot,
         "tpmlogp1": expr,
@@ -1091,7 +1072,7 @@ def _prepare_logged(data_dir: Path, depmap_release: str) -> None:
     add(_sbs_feature_block(sbs, cancer_lines, name_to_model, set(model_table["cellline"].astype(str))))
     add(_suffix_features(amp_f, "amp"))
     add(_suffix_features(hom_f, "homdel"))
-    del amp_f, hom_f, amp, homdel, known_cn, cn, cn_log, wgs, wes, cnv_call
+    del amp_f, hom_f, amp, homdel, known_cn, cn, wgs, wes, cnv_call
     add(_suffix_features(_binary_where_known(damaging_c.gt(0), damaging_c.notna()), "mutdamaging"))
     add(_suffix_features(_binary_where_known(hotspot_c.gt(0), hotspot_c.notna()), "muthotspot"))
     if not lof_c.empty:
