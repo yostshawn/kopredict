@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 import re
 import sys
@@ -382,7 +383,9 @@ def _exposures_from_sheet(frame: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("COSMIC CellLines Signatures sheet does not have SBS columns.")
     id_col = next((c for c in frame.columns if str(c).strip().lower() == "sample name"), frame.columns[0])
     exposures = frame.set_index(id_col)[sbs_cols]
-    exposures = exposures[~exposures.index.astype(str).str.lower().isin(["nan", "sample name"])]
+    # Sample names such as 697 are stored as numbers in the workbook.
+    exposures.index = exposures.index.map(lambda value: str(value).strip())
+    exposures = exposures[~exposures.index.str.lower().isin(["nan", "sample name", ""])]
     exposures.columns = [str(c).strip().lower().replace(" ", "") for c in exposures.columns]
     return _numeric_frame(exposures)
 
@@ -655,51 +658,89 @@ def read_protein_matrix(
     return _collapse_duplicate_index(numeric, "mean")
 
 
-def _drop_constant_rows(features: pd.DataFrame) -> pd.DataFrame:
-    ones = (features == 1).sum(axis=1)
-    zeros = (features == 0).sum(axis=1)
-    return features.loc[(ones > 0) & (zeros > 0)]
+def _keep_varying(frame: pd.DataFrame | None, columns: list[str]) -> tuple[pd.DataFrame | None, int]:
+    """Align a 0/1/NA block to cell lines and drop rows that never take both values.
+
+    Returns the kept float32 block and how many rows were removed.
+    """
+    if frame is None or frame.empty:
+        return None, 0
+    aligned = frame.reindex(columns=columns)
+    values = aligned.to_numpy(dtype="float32", copy=True)
+    ones = np.nansum(values == 1, axis=1)
+    zeros = np.nansum(values == 0, axis=1)
+    keep = (ones > 0) & (zeros > 0)
+    dropped = int((~keep).sum())
+    if not keep.any():
+        return None, dropped
+    kept = pd.DataFrame(values[keep], index=aligned.index[keep], columns=columns)
+    return kept, dropped
+
+
+def _encode_feature_rows(features: pd.DataFrame) -> np.ndarray:
+    values = features.to_numpy(dtype="float32", copy=False)
+    encoded = np.zeros(values.shape, dtype=np.uint8)
+    encoded[np.equal(values, 1)] = 1
+    encoded[np.isnan(values)] = 255
+    return encoded
+
+
+def _hash_feature_rows(encoded: np.ndarray) -> np.ndarray:
+    data = np.ascontiguousarray(encoded)
+    pad = (-data.shape[1]) % 8
+    if pad:
+        data = np.pad(data, ((0, 0), (0, pad)), mode="constant")
+    folded = data.view(np.uint64)
+    hashes = np.zeros(data.shape[0], dtype=np.uint64)
+    for column in range(folded.shape[1]):
+        hashes ^= folded[:, column] * np.uint64(0x9E3779B97F4A7C15 + column)
+    return hashes
 
 
 def dedupe_identical_rows(features: pd.DataFrame) -> pd.DataFrame:
-    filled = features.fillna(-1)
-    keys = pd.util.hash_pandas_object(filled, index=False).to_numpy()
-    values = filled.to_numpy()
-    source = features.to_numpy()
+    encoded = _encode_feature_rows(features)
     names = features.index.astype(str).tolist()
-    buckets: dict[object, list[list[int]]] = {}
-    for position, key in enumerate(keys):
-        groups = buckets.setdefault(key, [])
-        placed = False
-        row = values[position]
-        for members in groups:
-            if np.array_equal(row, values[members[0]], equal_nan=True):
-                members.append(position)
-                placed = True
+    columns = features.columns
+    del features
+    gc.collect()
+    hashes = _hash_feature_rows(encoded)
+    groups: dict[int, list[int]] = {}
+    name_groups: dict[int, list[str]] = {}
+    reps: list[int] = []
+    for position, key in enumerate(hashes.tolist()):
+        row = encoded[position]
+        match = None
+        for rep in groups.get(int(key), ()):
+            if np.array_equal(row, encoded[rep]):
+                match = rep
                 break
-        if not placed:
-            groups.append([position])
-    rows = []
-    index = []
-    for groups in buckets.values():
-        for members in groups:
-            rows.append(source[members[0]])
-            index.append(":".join(dict.fromkeys(names[i] for i in members)))
-    return pd.DataFrame(rows, index=index, columns=features.columns)
+        if match is None:
+            groups.setdefault(int(key), []).append(position)
+            name_groups[position] = [names[position]]
+            reps.append(position)
+        else:
+            name_groups[match].append(names[position])
+    chosen = encoded[reps]
+    decoded = np.full(chosen.shape, np.nan, dtype=np.float32)
+    decoded[chosen == 0] = 0
+    decoded[chosen == 1] = 1
+    index = [":".join(dict.fromkeys(name_groups[rep])) for rep in reps]
+    return pd.DataFrame(decoded, index=index, columns=columns)
 
 
 def _sbs_feature_block(exposures: pd.DataFrame, columns: list[str], name_to_model: dict[str, str], model_ids: set[str]) -> pd.DataFrame:
-    rows = []
-    index = []
-    for sample, matched in ((str(sample), match_label_to_model(sample, model_ids, name_to_model)) for sample in exposures.index):
-        if matched:
-            rows.append(matched)
-            index.append(sample)
-    if not rows:
+    matched = []
+    keep = []
+    for sample in exposures.index:
+        model = match_label_to_model(sample, model_ids, name_to_model)
+        keep.append(model is not None)
+        if model:
+            matched.append(model)
+    if not matched:
         print("WARNING: no Petljak samples matched DepMap model names.", file=sys.stderr)
         return pd.DataFrame(columns=columns)
-    use = exposures.loc[index].copy()
-    use.index = rows
+    use = exposures.loc[keep].copy()
+    use.index = matched
     use = use.groupby(level=0).max()
     blocks = []
     for signature in use.columns:
@@ -723,6 +764,8 @@ def _engineer_models(models: pd.DataFrame, signatures: pd.DataFrame, hrd: pd.Dat
 
     sig = signatures.copy()
     sig.columns = [str(c).lower().replace(" ", "") for c in sig.columns]
+    # OmicsGlobalSignatures.csv has a blank first header; pandas names it Unnamed: 0.
+    sig = sig.drop(columns=[c for c in sig.columns if str(c).startswith("unnamed:")])
     sig_id = "modelid" if "modelid" in sig.columns else sig.columns[0]
     sig = sig.rename(columns={sig_id: "cellline"}).drop_duplicates("cellline").set_index("cellline")
     overlap = [c for c in sig.columns if c in models.columns]
@@ -1031,20 +1074,33 @@ def _prepare_logged(data_dir: Path, depmap_release: str) -> None:
 
     print("Step 6/6: building the binary feature matrix")
     blocks = []
+    dropped_constant = 0
+
+    def add(frame: pd.DataFrame | None) -> None:
+        nonlocal blocks, dropped_constant
+        kept, dropped = _keep_varying(frame, cancer_lines)
+        dropped_constant += dropped
+        if kept is not None:
+            blocks.append(kept)
+
     model_indexed = model_table.set_index("cellline")
     for column in _METADATA_COLUMNS:
         if column not in model_indexed.columns:
             continue
-        blocks.append(one_hot(model_indexed[column].rename(column), cancer_lines))
-    blocks.append(_sbs_feature_block(sbs, cancer_lines, name_to_model, set(model_table["cellline"].astype(str))))
-    blocks.append(_suffix_features(amp_f.reindex(columns=cancer_lines), "amp"))
-    blocks.append(_suffix_features(hom_f.reindex(columns=cancer_lines), "homdel"))
-    blocks.append(_suffix_features(_binary_where_known(damaging_c.gt(0), damaging_c.notna()), "mutdamaging"))
-    blocks.append(_suffix_features(_binary_where_known(hotspot_c.gt(0), hotspot_c.notna()), "muthotspot"))
+        add(one_hot(model_indexed[column].rename(column), cancer_lines))
+    add(_sbs_feature_block(sbs, cancer_lines, name_to_model, set(model_table["cellline"].astype(str))))
+    add(_suffix_features(amp_f, "amp"))
+    add(_suffix_features(hom_f, "homdel"))
+    del amp_f, hom_f, amp, homdel, known_cn, cn, cn_log, wgs, wes, cnv_call
+    add(_suffix_features(_binary_where_known(damaging_c.gt(0), damaging_c.notna()), "mutdamaging"))
+    add(_suffix_features(_binary_where_known(hotspot_c.gt(0), hotspot_c.notna()), "muthotspot"))
     if not lof_c.empty:
-        blocks.append(_suffix_features(_binary_where_known(lof_c.gt(0), lof_c.notna()), "likelylof"))
-    high, low = threshold_high_low(expr_z.reindex(columns=cancer_lines), "highexp", "lowexp")
-    blocks.extend([high, low])
+        add(_suffix_features(_binary_where_known(lof_c.gt(0), lof_c.notna()), "likelylof"))
+    del damaging, hotspot, lof, damaging_c, hotspot_c, lof_c
+    high, low = threshold_high_low(expr_z, "highexp", "lowexp")
+    add(high)
+    add(low)
+    del high, low, expr, expr_z
     for matrix, high_name, low_name in (
         (sanger_z, "highsangerprot", "lowsangerprot"),
         (gygi_z, "highdepmapprot", "lowdepmapprot"),
@@ -1052,23 +1108,33 @@ def _prepare_logged(data_dir: Path, depmap_release: str) -> None:
     ):
         if matrix.empty:
             continue
-        blocks.extend(threshold_high_low(matrix.reindex(columns=cancer_lines), high_name, low_name))
+        high, low = threshold_high_low(matrix, high_name, low_name)
+        add(high)
+        add(low)
+    del sanger, gygi, rppa, sanger_z, gygi_z, rppa_z, protein_frames
     if not pair_fusions.empty:
         aligned = pair_fusions.reindex(columns=cancer_lines)
         screened = [col for col in aligned.columns if col in pair_fusions.columns]
         aligned.loc[:, screened] = aligned.loc[:, screened].fillna(0)
-        blocks.append(aligned)
-    blocks.extend(_dependency_feature_blocks(crispr, cancer_lines, "sensitivecrispr", "resistantcrispr"))
-    blocks.extend(_dependency_feature_blocks(rnai, cancer_lines, "sensitivernai", "resistantrnai"))
-    blocks.append(_suffix_features(ko.reindex(columns=cancer_lines), "ko"))
-    blocks.append(_suffix_features(altered.reindex(columns=cancer_lines), "altered"))
+        add(aligned)
+        del aligned
+    del pair_fusions, gene_fusions, gene_fusion_c
+    for block in _dependency_feature_blocks(crispr, cancer_lines, "sensitivecrispr", "resistantcrispr"):
+        add(block)
+    del crispr
+    for block in _dependency_feature_blocks(rnai, cancer_lines, "sensitivernai", "resistantrnai"):
+        add(block)
+    del rnai
+    add(_suffix_features(ko, "ko"))
+    add(_suffix_features(altered, "altered"))
+    del ko, altered, amp_a, hom_a, dam_a, hot_a, lof_a, fus_a, omics_frames, genes_all
+    gc.collect()
 
-    features = pd.concat([block for block in blocks if block is not None and not block.empty], axis=0)
+    features = pd.concat(blocks, axis=0)
+    del blocks
+    gc.collect()
+    print(f"  Dropped {dropped_constant} constant feature rows")
     print(f"  Feature blocks combined: {shape(features)}")
-    features = features.loc[:, [c for c in cancer_lines if c in features.columns]]
-    before_constant = len(features)
-    features = _drop_constant_rows(features)
-    print(f"  Dropped {before_constant - len(features)} constant feature rows")
     before_dedupe = len(features)
     features = dedupe_identical_rows(features)
     print(f"  Merged identical rows: {before_dedupe} -> {len(features)}")
