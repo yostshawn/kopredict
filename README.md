@@ -67,7 +67,7 @@ kopredict -t IPPK -d crispr -c SOLID -O oncotreeprimarydisease
 
 By default the search drops feature names containing `absolute`, `sensitive`, `resistant`, `lowexp`, `highexp`, `depmapprot`, `sangerprot`, or `rppa`. `--keep-lowexp-highexp` and `--keep-depmapprot-sangerprot` keep those families (`rppa` is kept with the protein flag).
 
-Plots are written under `{output-dir}/{target}/{dataset}/`.
+Plots and the prediction summary are written under `data/output/{target}/{dataset}/` unless you pass `--output-dir`. That folder sits inside `data/`, which git ignores.
 
 ## Docker
 

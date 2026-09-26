@@ -13,3 +13,4 @@ dist/
 build/
 *.docx
 .DS_Store
+.vscode/

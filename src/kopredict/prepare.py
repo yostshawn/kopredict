@@ -12,7 +12,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from kopredict.download import DEFAULT_DEPMAP_RELEASE, verify_downloaded_files
 from kopredict.local_data import clear_load_caches, get_data_dir
@@ -295,7 +294,7 @@ def orient_gene_by_model(
     id_source = "column headers (cell-line name)" if sample_ids_were_columns else id_name
     print(
         f"    {label}: sample id is {id_source}; {len(raw_ids)} ids in the file; "
-        f"{len(raw_ids) - len(matched_ids)} not in Model.csv; {len(set(row_map[lab] for lab in keep))} ModelIDs kept"
+        f"{len(raw_ids) - len(matched_ids)} not in Model.csv; {len({row_map[lab] for lab in keep})} ModelIDs kept"
     )
     values = values.loc[keep]
     values.index = [row_map[lab] for lab in values.index]
@@ -879,7 +878,8 @@ def _write_omics_long(
                     melted[name] = pd.to_numeric(melted[name], errors="coerce").astype("float32")
             table = pa.Table.from_pandas(melted, preserve_index=False)
             if writer is None:
-                writer = pq.ParquetWriter(path, table.schema, compression="gzip")
+                parquet = __import__("pyarrow.parquet", fromlist=["ParquetWriter"])
+                writer = parquet.ParquetWriter(path, table.schema, compression="gzip")
             else:
                 table = table.cast(writer.schema)
             writer.write_table(table)

@@ -352,10 +352,11 @@ def main():
     )
     parser.add_argument(
         "--output-dir",
-        default=".",
+        default=None,
         help=(
-            "Base directory; PDFs under {output-dir}/{target}/{dataset}/; with --cohort-csv, "
-            "per-cohort PDFs under .../{target}/{dataset}/{oncotree_column}_{name}/ when significant."
+            "Base directory for plots and summaries (default: <data-dir>/output, usually data/output). "
+            "PDFs go under {output-dir}/{target}/{dataset}/; with --cohort-csv, "
+            "per-cohort PDFs go under .../{target}/{dataset}/{oncotree_column}_{name}/ when significant."
         ),
     )
     parser.add_argument(
@@ -432,7 +433,10 @@ def main():
 
         _local_data.clear_load_caches()
 
-    output_root = str(Path(args.output_dir).expanduser().resolve())
+    if args.output_dir:
+        output_root = str(Path(args.output_dir).expanduser().resolve())
+    else:
+        output_root = str(get_data_dir() / "output")
 
     cur_target = args.target
     cur_dataset = str(args.dataset).lower()
