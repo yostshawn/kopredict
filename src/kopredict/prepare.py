@@ -15,6 +15,7 @@ import pyarrow.parquet as pq
 
 from kopredict.download import DEFAULT_DEPMAP_RELEASE, verify_downloaded_files
 from kopredict.local_data import clear_load_caches, get_data_dir
+from kopredict.log import log_to_file, shape
 from kopredict.sources import additional_record
 
 FEATURES_FILENAME = "final_depmap_features_26Q1.parquet.gz"
@@ -27,9 +28,11 @@ LOF_CLASSES = (
     "Splice_Site",
     "Nonstop_Mutation",
 )
+PROTEIN_CODING_LOCUS = "protein-coding gene"
 
 _FILE_MODELS = "Model_and_OmicsSignatures.parquet.gz"
 _FILE_OMICS = "OmicsFull_processed.parquet.gz"
+_FILE_PROTEOMICS = "Proteomics_processed.parquet.gz"
 _FILE_CRISPR = "CRISPRGeneEffect_processed.parquet.gz"
 _FILE_RNAI = "D2_combined_gene_dep_scores_processed.parquet.gz"
 
@@ -74,19 +77,95 @@ def _symbol(value) -> str:
     return text.upper()
 
 
+def protein_coding_genes(gene_table: pd.DataFrame) -> pd.DataFrame:
+    """Keep Gene.csv rows whose locus_group is a protein-coding gene."""
+    columns = {str(c).lower(): c for c in gene_table.columns}
+    if "locus_group" not in columns:
+        raise ValueError("Gene.csv must contain a locus_group column.")
+    group = gene_table[columns["locus_group"]].astype(str).str.strip().str.lower()
+    kept = gene_table.loc[group == PROTEIN_CODING_LOCUS].copy()
+    if kept.empty:
+        raise ValueError(f"Gene.csv has no rows with locus_group {PROTEIN_CODING_LOCUS!r}.")
+    return kept
+
+
+def build_gene_lookup(gene_table: pd.DataFrame) -> dict[str, str]:
+    """Map HGNC, Entrez, Ensembl, and UniProt ids to the Gene.csv symbol."""
+    columns = {str(c).lower(): c for c in gene_table.columns}
+    if "symbol" not in columns:
+        raise ValueError("Gene.csv must contain a symbol column.")
+    symbols = gene_table[columns["symbol"]].astype(str).str.strip()
+    lookup: dict[str, str] = {}
+
+    def add(keys: pd.Series, symbol_values: pd.Series) -> None:
+        for key, symbol in zip(keys, symbol_values):
+            text = str(key).strip()
+            if not text or text.lower() in {"nan", "none", "<na>"}:
+                continue
+            if not symbol or str(symbol).lower() in {"nan", "none"}:
+                continue
+            lookup.setdefault(text.upper(), str(symbol))
+
+    add(symbols, symbols)
+    if "entrez_id" in columns:
+        entrez = pd.to_numeric(gene_table[columns["entrez_id"]], errors="coerce")
+        add(entrez.dropna().astype("int64").astype(str), symbols.loc[entrez.dropna().index])
+    if "ensembl_gene_id" in columns:
+        ensembl = gene_table[columns["ensembl_gene_id"]].astype(str).str.split(".").str[0]
+        add(ensembl, symbols)
+    if "hgnc_id" in columns:
+        add(gene_table[columns["hgnc_id"]].astype(str), symbols)
+    if "uniprot_ids" in columns:
+        parts = (
+            gene_table[columns["uniprot_ids"]]
+            .astype(str)
+            .str.split("|")
+            .explode()
+            .str.strip()
+        )
+        add(parts, symbols.loc[parts.index])
+    return lookup
+
+
+def resolve_gene_label(value, lookup: dict[str, str]) -> str | None:
+    """Return the Gene.csv symbol for a DepMap gene label, or None if it is not a gene."""
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "unnamed: 0"}:
+        return None
+    left, inside = text, ""
+    if text.endswith(")") and " (" in text:
+        left, inside = text[:-1].rsplit(" (", 1)
+        inside = inside.split(".", 1)[0].strip()
+    candidates = [left, inside, text.split(".", 1)[0], text]
+    for candidate in candidates:
+        token = candidate.strip()
+        if not token:
+            continue
+        hit = lookup.get(token.upper())
+        if hit:
+            return hit
+    return None
+
+
+def _apply_gene_symbols(frame: pd.DataFrame, lookup: dict[str, str] | None, label: str) -> pd.DataFrame:
+    if not lookup or frame.empty:
+        return frame
+    mapped = [resolve_gene_label(name, lookup) for name in frame.index.astype(str)]
+    kept = frame.copy()
+    kept.index = mapped
+    recognized = kept.index.notna()
+    dropped = int((~recognized).sum())
+    kept = kept.loc[recognized]
+    print(
+        f"    {label}: kept {len(kept)} gene symbols; "
+        f"removed {dropped} genes that are not protein-coding genes in Gene.csv"
+    )
+    kept.attrs["genes_removed"] = dropped
+    return kept
+
+
 def _name_key(value) -> str:
     return "".join(ch for ch in str(value).upper() if ch.isalnum())
-
-
-def _rename_id(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out.columns = [str(c).strip() for c in out.columns]
-    lookup = {c.lower().replace(" ", "").replace("_", ""): c for c in out.columns}
-    for key in ("modelid", "depmapid", "profileid"):
-        if key in lookup:
-            return out.rename(columns={lookup[key]: key})
-    first = out.columns[0]
-    return out.rename(columns={first: "row_id"})
 
 
 def _numeric_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -130,16 +209,30 @@ def match_label_to_model(label, model_ids: set[str], name_to_model: dict[str, st
     return None
 
 
-def profile_to_model_map(profiles: pd.DataFrame) -> dict[str, str]:
-    frame = _rename_id(profiles)
+def _profile_frame(profiles: pd.DataFrame) -> pd.DataFrame:
+    frame = profiles.copy()
     frame.columns = [str(c).lower().replace(" ", "").replace("_", "") for c in frame.columns]
-    if "profileid" not in frame.columns or "modelid" not in frame.columns:
+    return frame
+
+
+def _map_to_model(profiles: pd.DataFrame, source: str) -> dict[str, str]:
+    frame = _profile_frame(profiles)
+    if source not in frame.columns or "modelid" not in frame.columns:
         return {}
     mapping = {}
-    for profile, model in zip(frame["profileid"], frame["modelid"]):
-        if pd.notna(profile) and pd.notna(model):
-            mapping[str(profile)] = str(model)
+    for src, model in zip(frame[source], frame["modelid"]):
+        if pd.notna(src) and pd.notna(model):
+            mapping[str(src)] = str(model)
     return mapping
+
+
+def profile_to_model_map(profiles: pd.DataFrame) -> dict[str, str]:
+    return _map_to_model(profiles, "profileid")
+
+
+def condition_to_model_map(profiles: pd.DataFrame) -> dict[str, str]:
+    """Map OmicsProfiles ModelConditionID values onto ModelID."""
+    return _map_to_model(profiles, "modelconditionid")
 
 
 def orient_gene_by_model(
@@ -148,14 +241,17 @@ def orient_gene_by_model(
     name_to_model: dict[str, str],
     profile_map: dict[str, str],
     *,
+    condition_map: dict[str, str] | None = None,
     binary: bool = False,
+    gene_lookup: dict[str, str] | None = None,
+    label: str = "matrix",
 ) -> pd.DataFrame:
     """Return a gene-by-ModelID numeric matrix."""
     frame = df.copy()
     frame.columns = [str(c).strip() for c in frame.columns]
     compact = {c.lower().replace(" ", "").replace("_", ""): c for c in frame.columns}
     id_name = None
-    for key in ("modelid", "depmapid", "profileid", "cellline"):
+    for key in ("modelid", "depmapid", "profileid", "modelconditionid", "sequencingid", "cellline"):
         if key in compact:
             id_name = compact[key]
             break
@@ -163,35 +259,54 @@ def orient_gene_by_model(
         id_name = frame.columns[0]
     labels = frame[id_name].astype(str)
     values = frame.drop(columns=[id_name])
-    values.columns = [_symbol(c) for c in values.columns]
     values = _numeric_frame(values)
     values.index = labels
+
+    def _to_model(text: str) -> str | None:
+        if text in profile_map and profile_map[text] in model_ids:
+            return profile_map[text]
+        if condition_map and text in condition_map and condition_map[text] in model_ids:
+            return condition_map[text]
+        return match_label_to_model(text, model_ids, name_to_model)
 
     def _axis_models(axis_labels) -> dict:
         found = {}
         for lab in axis_labels:
             text = str(lab)
-            if text in profile_map and profile_map[text] in model_ids:
-                found[lab] = profile_map[text]
+            # "SYMBOL (7157)" headers are genes, not cell lines.
+            if text.endswith(")") and " (" in text:
                 continue
-            matched = match_label_to_model(text, model_ids, name_to_model)
+            matched = _to_model(text)
             if matched:
                 found[lab] = matched
         return found
 
     row_map = _axis_models(values.index)
     col_map = _axis_models(values.columns)
+    sample_ids_were_columns = False
     if len(col_map) > len(row_map):
         values = values.T
         row_map = col_map
+        sample_ids_were_columns = True
+    raw_ids = pd.Index(values.index.astype(str)).unique()
     keep = [lab for lab in values.index if lab in row_map]
+    matched_ids = {str(lab) for lab in keep}
+    id_source = "column headers (cell-line name)" if sample_ids_were_columns else id_name
+    print(
+        f"    {label}: sample id is {id_source}; {len(raw_ids)} ids in the file; "
+        f"{len(raw_ids) - len(matched_ids)} not in Model.csv; {len(set(row_map[lab] for lab in keep))} ModelIDs kept"
+    )
     values = values.loc[keep]
     values.index = [row_map[lab] for lab in values.index]
     values = values.T
     if values.columns.duplicated().any():
         values = values.T.groupby(level=0).mean().T if not binary else values.T.groupby(level=0).max().T
     values = _collapse_duplicate_index(values, "max" if binary else "mean")
+    values = _apply_gene_symbols(values, gene_lookup, label)
+    genes_removed = int(values.attrs.get("genes_removed", 0))
+    values = _collapse_duplicate_index(values, "max" if binary else "mean")
     values = values.dropna(axis=0, how="all").dropna(axis=1, how="all")
+    values.attrs["genes_removed"] = genes_removed
     return values
 
 
@@ -224,23 +339,32 @@ def read_hrd_table(path: Path) -> pd.DataFrame:
     )
 
 
+_SBS_SHEET = "COSMIC CellLines Signatures"
+
+
 def load_sbs_exposures(path: Path) -> pd.DataFrame:
-    """Sample-by-signature numeric exposures from the Petljak workbook."""
+    """Cell-line SBS activities from the Petljak workbook sheet ``COSMIC CellLines Signatures``.
+
+    The sheet has a title row, then ``Sample Name`` plus SBS columns.
+    """
     book = pd.ExcelFile(path)
-    for sheet in book.sheet_names:
-        for header in range(0, 4):
-            preview = pd.read_excel(book, sheet_name=sheet, header=header, nrows=6)
-            if _sbs_columns(preview):
-                full = pd.read_excel(book, sheet_name=sheet, header=header)
-                return _exposures_from_sheet(full)
-            # Signature names may sit in the first column with cell lines as headers.
-            if preview.shape[1] > 4 and preview.iloc[:, 0].astype(str).str.contains("SBS", case=False).sum() >= 3:
-                full = pd.read_excel(book, sheet_name=sheet, header=header)
-                return _exposures_from_sheet(full)
-    raise ValueError(
-        "No SBS exposure sheet in "
-        f"{path}. Download supplementary data from {additional_record('somatic_signatures')['citation']}."
-    )
+    sheet = next((name for name in book.sheet_names if name.strip() == _SBS_SHEET), None)
+    if sheet is None:
+        raise ValueError(
+            f"Sheet {_SBS_SHEET!r} not found in {path}. "
+            f"Sheets: {book.sheet_names}."
+        )
+    preview = pd.read_excel(book, sheet_name=sheet, header=None, nrows=6)
+    header_row = None
+    for i, row in preview.iterrows():
+        values = [str(v).strip().lower() for v in row.tolist()]
+        if "sample name" in values:
+            header_row = int(i)
+            break
+    if header_row is None:
+        raise ValueError(f"Sheet {_SBS_SHEET!r} in {path} has no 'Sample Name' header.")
+    full = pd.read_excel(book, sheet_name=sheet, header=header_row)
+    return _exposures_from_sheet(full)
 
 
 def _sbs_columns(frame: pd.DataFrame) -> list:
@@ -254,18 +378,54 @@ def _sbs_columns(frame: pd.DataFrame) -> list:
 
 def _exposures_from_sheet(frame: pd.DataFrame) -> pd.DataFrame:
     sbs_cols = _sbs_columns(frame)
-    if len(sbs_cols) >= 3:
-        id_candidates = [c for c in frame.columns if c not in sbs_cols]
-        id_col = id_candidates[0]
-        exposures = frame.set_index(id_col)[sbs_cols]
-    else:
-        first = frame.iloc[:, 0].astype(str)
-        if first.str.contains("SBS", case=False).sum() < 3:
-            raise ValueError("Sheet does not look like SBS exposures.")
-        exposures = frame.set_index(frame.columns[0]).T
+    if len(sbs_cols) < 3:
+        raise ValueError("COSMIC CellLines Signatures sheet does not have SBS columns.")
+    id_col = next((c for c in frame.columns if str(c).strip().lower() == "sample name"), frame.columns[0])
+    exposures = frame.set_index(id_col)[sbs_cols]
+    exposures = exposures[~exposures.index.astype(str).str.lower().isin(["nan", "sample name"])]
     exposures.columns = [str(c).strip().lower().replace(" ", "") for c in exposures.columns]
-    exposures = exposures.loc[:, [c for c in exposures.columns if c.startswith("sbs")]]
     return _numeric_frame(exposures)
+
+
+def _combine_copy_number(wgs: pd.DataFrame, wes: pd.DataFrame) -> pd.DataFrame:
+    """Use WGS for a sample when that sample has WGS data; otherwise use WES.
+
+    Gene rows are the union of symbols kept from either file.
+    """
+    wgs_removed = int(wgs.attrs.get("genes_removed", 0)) if wgs is not None else 0
+    wes_removed = int(wes.attrs.get("genes_removed", 0)) if wes is not None and not wes.empty else 0
+    print(
+        f"  Removed {wgs_removed} genes from WGS and {wes_removed} genes from WES "
+        "(not protein-coding genes in Gene.csv)."
+    )
+    if wes is None or wes.empty:
+        print("  No WES copy-number matrix; combined copy number is WGS only.")
+        print(f"  Combined copy number: {shape(wgs)}")
+        return wgs
+    if wgs is None or wgs.empty:
+        print("  No WGS copy-number matrix; combined copy number is WES only.")
+        print(f"  Combined copy number: {shape(wes)}")
+        return wes
+    genes = wgs.index.union(wes.index)
+    wgs_samples = [col for col in wgs.columns if wgs[col].notna().any()]
+    wgs_sample_set = set(wgs_samples)
+    wes_samples = [col for col in wes.columns if col not in wgs_sample_set]
+    wgs_part = wgs.reindex(index=genes, columns=wgs_samples)
+    wes_part = wes.reindex(index=genes, columns=wes_samples)
+    combined = pd.concat([wgs_part, wes_part], axis=1)
+    only_wgs = len(wgs.index.difference(wes.index))
+    only_wes = len(wes.index.difference(wgs.index))
+    both = len(wgs.index.intersection(wes.index))
+    print(
+        f"  Copy number samples: {len(wgs_samples)} use WGS only; "
+        f"{len(wes_samples)} have no WGS data and use WES."
+    )
+    print(
+        f"  Gene symbol union: {len(genes)} "
+        f"({both} in both files, {only_wgs} only in WGS, {only_wes} only in WES)."
+    )
+    print(f"  Combined copy number: {shape(combined)}")
+    return combined
 
 
 def to_log2_ratio(cn: pd.DataFrame, ploidy: pd.Series | None) -> pd.DataFrame:
@@ -327,20 +487,15 @@ def one_hot(series: pd.Series, columns: list[str]) -> pd.DataFrame:
 
 def cin_decile_labels(cin: pd.Series) -> pd.Series:
     numeric = pd.to_numeric(cin, errors="coerce")
-    quantiles = numeric.quantile([i / 10 for i in range(10)])
-    edges = quantiles.to_numpy(dtype=float)
+    edges = numeric.quantile([i / 10 for i in range(10)]).to_numpy(dtype=float)
 
     def label(value):
         if pd.isna(value):
             return np.nan
         idx = int(np.searchsorted(edges, value, side="right") - 1)
-        idx = min(max(idx, 0), 9)
-        return str(int(round(edges_index(idx))))
+        return str(int(min(max(idx, 0), 9)))
 
-    def edges_index(idx: int) -> int:
-        return idx
-
-    return numeric.map(lambda value: str(int(min(max(np.searchsorted(edges, value, side="right") - 1, 0), 9))) if pd.notna(value) else np.nan)
+    return numeric.map(label)
 
 
 def _find_column(columns, candidates: tuple[str, ...]) -> str | None:
@@ -351,23 +506,36 @@ def _find_column(columns, candidates: tuple[str, ...]) -> str | None:
     return None
 
 
-def lof_mask(mutations: pd.DataFrame, model_ids: set[str]) -> pd.DataFrame:
-    gene_col = _find_column(mutations.columns, ("hugosymbol", "genesymbol", "symbol", "gene"))
+def lof_mask(mutations: pd.DataFrame, model_ids: set[str], gene_lookup: dict[str, str] | None = None) -> pd.DataFrame:
+    gene_col = _find_column(
+        mutations.columns, ("hugosymbol", "genesymbol", "symbol", "gene", "entrezgeneid", "ensemblgeneid")
+    )
     model_col = _find_column(mutations.columns, ("modelid", "depmapid", "cellline"))
     class_col = _find_column(mutations.columns, ("variantclassification", "variantclass", "class"))
-    if not gene_col or not model_col or not class_col:
-        raise ValueError("OmicsSomaticMutations.csv needs gene, model, and variant-class columns.")
-    hit = mutations[mutations[class_col].astype(str).isin(LOF_CLASSES)][[model_col, gene_col]].dropna()
-    hit["gene"] = hit[gene_col].map(_symbol)
+    lof_flag = _find_column(mutations.columns, ("likelylof",))
+    if not gene_col or not model_col or (not class_col and not lof_flag):
+        raise ValueError("OmicsSomaticMutations.csv needs gene, model, and a loss-of-function column.")
+    if lof_flag:
+        flag = mutations[lof_flag].astype(str).str.lower().isin(["true", "1", "yes"])
+        hit = mutations.loc[flag, [model_col, gene_col]].dropna()
+    else:
+        hit = mutations[mutations[class_col].astype(str).isin(LOF_CLASSES)][[model_col, gene_col]].dropna()
+    if gene_lookup:
+        hit["gene"] = hit[gene_col].map(lambda value: resolve_gene_label(value, gene_lookup))
+    else:
+        hit["gene"] = hit[gene_col].map(_symbol)
     hit["cellline"] = hit[model_col].astype(str)
     hit = hit[hit["cellline"].isin(model_ids)]
     if hit.empty:
         return pd.DataFrame()
+    hit = hit[hit["gene"].notna()]
     paired = hit.drop_duplicates().assign(value=1)
     return paired.pivot_table(index="gene", columns="cellline", values="value", aggfunc="max")
 
 
-def fusion_tables(fusions: pd.DataFrame, model_ids: set[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def fusion_tables(
+    fusions: pd.DataFrame, model_ids: set[str], gene_lookup: dict[str, str] | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     frame = fusions.copy()
     frame.columns = [str(c).strip() for c in frame.columns]
     model_col = _find_column(frame.columns, ("modelid", "depmapid", "cellline"))
@@ -383,9 +551,13 @@ def fusion_tables(fusions: pd.DataFrame, model_ids: set[str]) -> tuple[pd.DataFr
     use = frame[[model_col, left, right]].dropna()
     use["cellline"] = use[model_col].astype(str)
     use = use[use["cellline"].isin(model_ids)]
-    use["left"] = use[left].map(_symbol)
-    use["right"] = use[right].map(_symbol)
-    use = use[(use["left"] != "") & (use["right"] != "") & (use["left"] != "NAN") & (use["right"] != "NAN")]
+    if gene_lookup:
+        use["left"] = use[left].map(lambda value: resolve_gene_label(value, gene_lookup))
+        use["right"] = use[right].map(lambda value: resolve_gene_label(value, gene_lookup))
+    else:
+        use["left"] = use[left].map(_symbol)
+        use["right"] = use[right].map(_symbol)
+    use = use[use["left"].notna() & use["right"].notna()]
     use["feature"] = "FUSION_" + use["left"] + "_" + use["right"]
     pairs = use.drop_duplicates(["feature", "cellline"]).assign(value=1)
     pair_matrix = pairs.pivot_table(index="feature", columns="cellline", values="value", aggfunc="max")
@@ -405,21 +577,57 @@ def read_protein_matrix(
     path: Path,
     model_ids: set[str],
     name_to_model: dict[str, str],
-    gene_table: pd.DataFrame | None,
+    gene_lookup: dict[str, str] | None,
 ) -> pd.DataFrame:
     raw = _read_csv(path)
     raw.columns = [str(c).strip() for c in raw.columns]
+    id_col = raw.columns[0]
+    # Proteomics matrices are model rows by UniProt columns, or the reverse.
+    sample_values = raw[id_col].astype(str)
+    columns_are_models = sum(match_label_to_model(col, model_ids, name_to_model) is not None for col in raw.columns[1:6]) >= 3
+    rows_are_models = sample_values.head(20).map(lambda value: match_label_to_model(value, model_ids, name_to_model) is not None).mean() > 0.5
+    if columns_are_models or rows_are_models:
+        # Keep UniProt accessions as the feature id. Do not convert them to gene symbols.
+        if rows_are_models:
+            numeric = _numeric_frame(raw.iloc[:, 1:])
+            numeric.columns = [str(c).strip() for c in raw.columns[1:]]
+            numeric.index = sample_values.to_numpy()
+            numeric = numeric.T
+            sample_labels = list(numeric.columns)
+            id_source = str(id_col)
+        else:
+            numeric = _numeric_frame(raw.iloc[:, 1:]).T
+            numeric.index = [str(c).strip() for c in raw.columns[1:]]
+            numeric.columns = sample_values.to_numpy()
+            sample_labels = list(numeric.columns)
+            id_source = "column headers"
+        print(f"    {path.name}: kept {numeric.shape[0]} UniProt ids (not converted to gene symbols)")
+        col_map = {}
+        for col in numeric.columns:
+            matched = match_label_to_model(col, model_ids, name_to_model)
+            if matched:
+                col_map[col] = matched
+        raw_ids = pd.Index(pd.Series(sample_labels).astype(str)).unique()
+        matched_ids = {str(lab) for lab in sample_labels if lab in col_map}
+        print(
+            f"    {path.name}: sample id is {id_source}; {len(raw_ids)} ids in the file; "
+            f"{len(raw_ids) - len(matched_ids)} not in Model.csv; "
+            f"{len(set(col_map.values()))} ModelIDs kept"
+        )
+        if not col_map:
+            return pd.DataFrame()
+        numeric = numeric[list(col_map)].copy()
+        numeric.columns = [col_map[col] for col in numeric.columns]
+        numeric = numeric.loc[:, ~numeric.columns.duplicated()]
+        return _collapse_duplicate_index(numeric, "mean")
     gene_col = _find_column(raw.columns, ("genesymbol", "gene_symbol", "hugosymbol", "symbol", "gene", "approvedsymbol"))
     if gene_col is None:
         text_cols = [c for c in raw.columns if not pd.api.types.is_numeric_dtype(raw[c])]
         gene_col = text_cols[0] if text_cols else raw.columns[0]
-    genes = raw[gene_col].map(_symbol)
-    if gene_table is not None and genes.str.fullmatch(r"[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9]").mean() > 0.5:
-        uniprot_col = _find_column(gene_table.columns, ("uniprot", "uniprotswissprot", "uniprotkb"))
-        symbol_col = _find_column(gene_table.columns, ("genesymbol", "symbol", "genename", "hugosymbol"))
-        if uniprot_col and symbol_col:
-            lookup = gene_table.set_index(gene_table[uniprot_col].astype(str).str.upper())[symbol_col]
-            genes = genes.map(lambda value: _symbol(lookup.get(value, value)))
+    if gene_lookup:
+        genes = raw[gene_col].map(lambda value: resolve_gene_label(value, gene_lookup))
+    else:
+        genes = raw[gene_col].map(_symbol)
     numeric = raw.drop(columns=[gene_col])
     numeric = numeric.loc[:, numeric.apply(lambda col: pd.to_numeric(col, errors="coerce").notna().mean() > 0.5)]
     numeric = _numeric_frame(numeric)
@@ -445,21 +653,6 @@ def read_protein_matrix(
         numeric.columns = [col_map[col] for col in numeric.columns]
     numeric = numeric.loc[:, ~numeric.columns.duplicated()]
     return _collapse_duplicate_index(numeric, "mean")
-
-
-def _known_mask(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    aligned = frame.reindex(columns=columns)
-    return aligned.notna()
-
-
-def _as_01(frame: pd.DataFrame, columns: list[str], *, positive_only: bool = False) -> pd.DataFrame:
-    aligned = frame.reindex(columns=columns)
-    if positive_only:
-        known = aligned.notna()
-        data = np.where(known, (aligned.fillna(0) > 0).astype(float), np.nan)
-    else:
-        data = aligned.to_numpy(dtype=float)
-    return pd.DataFrame(data, index=frame.index, columns=columns)
 
 
 def _drop_constant_rows(features: pd.DataFrame) -> pd.DataFrame:
@@ -607,16 +800,21 @@ def _write_dependency(scores: pd.DataFrame, path: Path) -> None:
     wide.to_parquet(path, compression="gzip", index=False)
 
 
-def _write_omics_long(path: Path, columns: list[str], frames: dict[str, pd.DataFrame]) -> None:
+def _write_omics_long(
+    path: Path,
+    columns: list[str],
+    frames: dict[str, pd.DataFrame],
+    row_name: str = "genes",
+) -> None:
     genes = sorted(set().union(*[set(frame.index.astype(str)) for frame in frames.values() if not frame.empty]))
     schema_names = ["cellline", "gene", *frames.keys()]
     string_cols = {"cnv_call"}
     writer = None
     try:
-        print(f"  Writing long omics table for {len(genes)} genes and {len(columns)} cell lines")
+        print(f"  Writing long table for {len(genes)} {row_name} and {len(columns)} cell lines")
         for start in range(0, len(genes), 400):
             if start == 0 or (start // 400) % 25 == 0:
-                print(f"  Omics rows {start + 1}-{min(start + 400, len(genes))} of {len(genes)}")
+                print(f"  Rows {start + 1}-{min(start + 400, len(genes))} of {len(genes)}")
             chunk_genes = genes[start : start + 400]
             melted = None
             for name, frame in frames.items():
@@ -649,54 +847,16 @@ def _write_omics_long(path: Path, columns: list[str], frames: dict[str, pd.DataF
         pd.DataFrame(columns=schema_names).to_parquet(path, compression="gzip", index=False)
 
 
-class _Tee:
-    """Write each print to the terminal and a log file."""
-
-    def __init__(self, stream, handle):
-        self.stream = stream
-        self.handle = handle
-
-    def write(self, data: str) -> int:
-        self.stream.write(data)
-        self.handle.write(data)
-        self.handle.flush()
-        return len(data)
-
-    def flush(self) -> None:
-        self.stream.flush()
-        self.handle.flush()
-
-
-def _shape(frame: pd.DataFrame) -> str:
-    if frame is None or frame.empty:
-        return "empty"
-    return f"{frame.shape[0]} rows x {frame.shape[1]} columns"
-
-
 def prepare(data_dir: Path | None = None, depmap_release: str = DEFAULT_DEPMAP_RELEASE) -> None:
     if data_dir is not None:
         os.environ["KOPREDICT_DATA_DIR"] = str(data_dir)
         clear_load_caches()
     data_dir = get_data_dir()
-    log_path = data_dir / "prepare.log"
-    log_handle = log_path.open("w", encoding="utf-8")
-    previous_stdout, previous_stderr = sys.stdout, sys.stderr
-    sys.stdout = _Tee(previous_stdout, log_handle)
-    sys.stderr = _Tee(previous_stderr, log_handle)
-    try:
-        _prepare_logged(data_dir, depmap_release, log_path)
-    except SystemExit as exc:
-        if str(exc):
-            print(exc, file=sys.stderr)
-        raise SystemExit(1) from None
-    finally:
-        sys.stdout = previous_stdout
-        sys.stderr = previous_stderr
-        log_handle.close()
+    with log_to_file(data_dir / "prepare.log"):
+        _prepare_logged(data_dir, depmap_release)
 
 
-def _prepare_logged(data_dir: Path, depmap_release: str, log_path: Path) -> None:
-    print(f"Log file: {log_path}")
+def _prepare_logged(data_dir: Path, depmap_release: str) -> None:
     print(f"DepMap release: {depmap_release}")
     print(f"Step 1/6: checking raw inputs in {data_dir / 'raw'}")
     verify_downloaded_files(data_dir, depmap_release)
@@ -704,17 +864,22 @@ def _prepare_logged(data_dir: Path, depmap_release: str, log_path: Path) -> None
 
     print("Step 2/6: reading Model.csv, Gene.csv, OmicsProfiles.csv, HRD, and SBS exposures")
     models_raw = _read_csv(_raw(data_dir, "Model.csv"))
-    print(f"  Model.csv: {_shape(models_raw)}")
+    print(f"  Model.csv: {shape(models_raw)}")
     genes = _read_csv(_raw(data_dir, "Gene.csv"))
-    print(f"  Gene.csv: {_shape(genes)}")
+    coding = protein_coding_genes(genes)
+    gene_lookup = build_gene_lookup(coding)
+    print(
+        f"  Gene.csv: {shape(genes)}; kept {len(coding)} protein-coding genes "
+        f"({len(gene_lookup)} id-to-symbol keys)"
+    )
     profiles = _read_csv(_raw(data_dir, "OmicsProfiles.csv"))
-    print(f"  OmicsProfiles.csv: {_shape(profiles)}")
+    print(f"  OmicsProfiles.csv: {shape(profiles)}")
     hrd = read_hrd_table(_raw(data_dir, str(additional_record("hrd")["local_filename"])))
-    print(f"  HRD table: {_shape(hrd)}")
+    print(f"  HRD table: {shape(hrd)}")
     sbs = load_sbs_exposures(
         _raw(data_dir, str(additional_record("somatic_signatures")["local_filename"]))
     )
-    print(f"  SBS exposures: {_shape(sbs)}")
+    print(f"  SBS exposures: {shape(sbs)}")
 
     model_col = _find_column(models_raw.columns, ("modelid", "depmapid"))
     if model_col is None:
@@ -725,17 +890,20 @@ def _prepare_logged(data_dir: Path, depmap_release: str, log_path: Path) -> None
     staged = staged.rename(columns={"modelid": "cellline"})
     name_to_model = build_name_to_model(staged)
     profile_map = profile_to_model_map(profiles)
-    print(f"  {len(model_ids)} model IDs; {len(name_to_model)} name aliases; {len(profile_map)} omics profiles.")
+    condition_map = condition_to_model_map(profiles)
+    print(
+        f"  {len(model_ids)} model IDs; {len(name_to_model)} name aliases; "
+        f"{len(profile_map)} omics profiles; {len(condition_map)} model conditions."
+    )
 
     print("Step 3/6: loading copy number, mutations, expression, dependency, and proteomics")
     print("  Reading OmicsCNGeneWGS.csv")
-    wgs = orient_gene_by_model(_read_csv(_raw(data_dir, "OmicsCNGeneWGS.csv")), model_ids, name_to_model, profile_map)
-    print(f"  WGS copy number: {_shape(wgs)}")
+    wgs = orient_gene_by_model(_read_csv(_raw(data_dir, "OmicsCNGeneWGS.csv")), model_ids, name_to_model, profile_map, condition_map=condition_map, gene_lookup=gene_lookup, label="WGS copy number")
+    print(f"  WGS copy number: {shape(wgs)}")
     print("  Reading OmicsCNGeneMC_WES.csv")
-    wes = orient_gene_by_model(_read_csv(_raw(data_dir, "OmicsCNGeneMC_WES.csv")), model_ids, name_to_model, profile_map)
-    print(f"  WES copy number: {_shape(wes)}")
-    cn = wgs.combine_first(wes) if not wes.empty else wgs
-    print(f"  Combined copy number: {_shape(cn)}")
+    wes = orient_gene_by_model(_read_csv(_raw(data_dir, "OmicsCNGeneMC_WES.csv")), model_ids, name_to_model, profile_map, condition_map=condition_map, gene_lookup=gene_lookup, label="WES copy number")
+    print(f"  WES copy number: {shape(wes)}")
+    cn = _combine_copy_number(wgs, wes)
     signatures = _read_csv(_raw(data_dir, "OmicsGlobalSignatures.csv"))
     sig_preview = signatures.copy()
     sig_preview.columns = [str(c).lower().replace(" ", "") for c in sig_preview.columns]
@@ -745,49 +913,52 @@ def _prepare_logged(data_dir: Path, depmap_release: str, log_path: Path) -> None
         ploidy = pd.to_numeric(sig_preview.set_index(sid)["ploidy"], errors="coerce")
         ploidy.index = ploidy.index.astype(str)
     cn_log = to_log2_ratio(cn, ploidy)
-    print(f"  Log2 copy-number matrix: {_shape(cn_log)}")
+    print(f"  Log2 copy-number matrix: {shape(cn_log)}")
 
     print("  Reading damaging and hotspot mutation matrices")
     damaging = orient_gene_by_model(
-        _read_csv(_raw(data_dir, "OmicsSomaticMutationsMatrixDamaging.csv")), model_ids, name_to_model, profile_map, binary=True
+        _read_csv(_raw(data_dir, "OmicsSomaticMutationsMatrixDamaging.csv")), model_ids, name_to_model, profile_map, condition_map=condition_map, binary=True, gene_lookup=gene_lookup, label="damaging mutations"
     )
     hotspot = orient_gene_by_model(
-        _read_csv(_raw(data_dir, "OmicsSomaticMutationsMatrixHotspot.csv")), model_ids, name_to_model, profile_map, binary=True
+        _read_csv(_raw(data_dir, "OmicsSomaticMutationsMatrixHotspot.csv")), model_ids, name_to_model, profile_map, condition_map=condition_map, binary=True, gene_lookup=gene_lookup, label="hotspot mutations"
     )
-    print(f"  Damaging mutations: {_shape(damaging)}")
-    print(f"  Hotspot mutations: {_shape(hotspot)}")
+    print(f"  Damaging mutations: {shape(damaging)}")
+    print(f"  Hotspot mutations: {shape(hotspot)}")
     print("  Reading OmicsSomaticMutations.csv for likely loss-of-function")
-    lof = lof_mask(_read_csv(_raw(data_dir, "OmicsSomaticMutations.csv")), model_ids)
-    print(f"  Likely LoF: {_shape(lof)}")
+    lof = lof_mask(_read_csv(_raw(data_dir, "OmicsSomaticMutations.csv")), model_ids, gene_lookup)
+    print(f"  Likely LoF: {shape(lof)}")
     print("  Reading OmicsFusionFiltered.csv")
-    pair_fusions, gene_fusions = fusion_tables(_read_csv(_raw(data_dir, "OmicsFusionFiltered.csv")), model_ids)
-    print(f"  Fusion pairs: {_shape(pair_fusions)}; genes in a fusion: {_shape(gene_fusions)}")
+    pair_fusions, gene_fusions = fusion_tables(_read_csv(_raw(data_dir, "OmicsFusionFiltered.csv")), model_ids, gene_lookup)
+    print(f"  Fusion pairs: {shape(pair_fusions)}; genes in a fusion: {shape(gene_fusions)}")
     print("  Reading expression, CRISPR, RNAi, and proteomics")
     expr = orient_gene_by_model(
         _read_csv(_raw(data_dir, "OmicsExpressionTPMLogp1HumanProteinCodingGenes.csv")),
         model_ids,
         name_to_model,
         profile_map,
+        condition_map=condition_map,
+        gene_lookup=gene_lookup,
+        label="expression",
     )
-    crispr = orient_gene_by_model(_read_csv(_raw(data_dir, "CRISPRGeneEffect.csv")), model_ids, name_to_model, profile_map)
+    crispr = orient_gene_by_model(_read_csv(_raw(data_dir, "CRISPRGeneEffect.csv")), model_ids, name_to_model, profile_map, condition_map=condition_map, gene_lookup=gene_lookup, label="CRISPR")
     rnai = orient_gene_by_model(
-        _read_csv(_raw(data_dir, "D2_combined_gene_dep_scores.csv")), model_ids, name_to_model, profile_map
+        _read_csv(_raw(data_dir, "D2_combined_gene_dep_scores.csv")), model_ids, name_to_model, profile_map, condition_map=condition_map, gene_lookup=gene_lookup, label="RNAi"
     )
-    sanger = read_protein_matrix(_raw(data_dir, "harmonized_Sanger_MS_2022.csv"), model_ids, name_to_model, genes)
-    gygi = read_protein_matrix(_raw(data_dir, "harmonized_MS_CCLE_Gygi.csv"), model_ids, name_to_model, genes)
-    rppa = read_protein_matrix(_raw(data_dir, "harmonized_RPPA_CCLE.csv"), model_ids, name_to_model, genes)
-    print(f"  Expression: {_shape(expr)}")
-    print(f"  CRISPR: {_shape(crispr)}")
-    print(f"  RNAi: {_shape(rnai)}")
-    print(f"  Sanger proteomics: {_shape(sanger)}")
-    print(f"  Gygi proteomics: {_shape(gygi)}")
-    print(f"  RPPA: {_shape(rppa)}")
+    sanger = read_protein_matrix(_raw(data_dir, "harmonized_Sanger_MS_2022.csv"), model_ids, name_to_model, gene_lookup)
+    gygi = read_protein_matrix(_raw(data_dir, "harmonized_MS_CCLE_Gygi.csv"), model_ids, name_to_model, gene_lookup)
+    rppa = read_protein_matrix(_raw(data_dir, "harmonized_RPPA_CCLE.csv"), model_ids, name_to_model, gene_lookup)
+    print(f"  Expression: {shape(expr)}")
+    print(f"  CRISPR: {shape(crispr)}")
+    print(f"  RNAi: {shape(rnai)}")
+    print(f"  Sanger proteomics: {shape(sanger)}")
+    print(f"  Gygi proteomics: {shape(gygi)}")
+    print(f"  RPPA: {shape(rppa)}")
 
     print("Step 4/6: writing model metadata and CRISPR/RNAi dependency tables")
     model_table = _engineer_models(models_raw, signatures, hrd, sbs, name_to_model)
     model_table.columns = [str(c).lower() for c in model_table.columns]
     model_table.to_parquet(data_dir / _FILE_MODELS, compression="gzip", index=False)
-    print(f"  Wrote {_FILE_MODELS}: {_shape(model_table)}")
+    print(f"  Wrote {_FILE_MODELS}: {shape(model_table)}")
 
     cancer_lines = list(dict.fromkeys(_cancer_models(model_table)))
     print(f"  Cancer models kept for features: {len(cancer_lines)}")
@@ -838,15 +1009,25 @@ def _prepare_logged(data_dir: Path, depmap_release: str, log_path: Path) -> None
         "rnai": rnai,
         "cnv_call": cnv_call,
     }
+    protein_frames = {}
     if not sanger_z.empty:
-        omics_frames["sanger_proteomics_zscore"] = sanger_z
+        protein_frames["sanger_proteomics_zscore"] = sanger_z
     if not gygi_z.empty:
-        omics_frames["depmap_proteomics_zscore"] = gygi_z
+        protein_frames["depmap_proteomics_zscore"] = gygi_z
     if not rppa_z.empty:
-        omics_frames["rppa_zscore"] = rppa_z
+        protein_frames["rppa_zscore"] = rppa_z
     print(f"  Omics columns: {', '.join(omics_frames)}")
-    _write_omics_long(data_dir / _FILE_OMICS, cancer_lines, omics_frames)
+    _write_omics_long(data_dir / _FILE_OMICS, cancer_lines, omics_frames, row_name="genes")
     print(f"  Wrote {_FILE_OMICS}")
+    if protein_frames:
+        print(f"  Proteomics columns: {', '.join(protein_frames)}")
+        _write_omics_long(
+            data_dir / _FILE_PROTEOMICS,
+            cancer_lines,
+            protein_frames,
+            row_name="UniProt ids",
+        )
+        print(f"  Wrote {_FILE_PROTEOMICS}")
 
     print("Step 6/6: building the binary feature matrix")
     blocks = []
@@ -883,7 +1064,7 @@ def _prepare_logged(data_dir: Path, depmap_release: str, log_path: Path) -> None
     blocks.append(_suffix_features(altered.reindex(columns=cancer_lines), "altered"))
 
     features = pd.concat([block for block in blocks if block is not None and not block.empty], axis=0)
-    print(f"  Feature blocks combined: {_shape(features)}")
+    print(f"  Feature blocks combined: {shape(features)}")
     features = features.loc[:, [c for c in cancer_lines if c in features.columns]]
     before_constant = len(features)
     features = _drop_constant_rows(features)

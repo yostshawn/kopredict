@@ -5,11 +5,8 @@ are metadata/additional.csv. Signed DepMap links live in metadata/downloads.csv.
 """
 
 from __future__ import annotations
-
 from pathlib import Path
-
 import pandas as pd
-
 
 def metadata_dir() -> Path:
     """Directory of downloads.csv, depmap_files.csv, and additional.csv."""
