@@ -1,0 +1,626 @@
+# Acceptable options for oncotree_column in a kopredict run file.
+# Values and cell-line counts are from DepMap Public 26Q1 Model.csv.
+# cancer_types must match one value below exactly.
+oncotree_column:
+- oncotreelineage
+- oncotreeprimarydisease
+- oncotreesubtype
+- oncotreecode
+
+# Acceptable values for each column. The number is how many Model.csv cell lines have that exact value.
+oncotreelineage:
+  Lymphoid: 266
+  Lung: 261
+  Skin: 150
+  CNS/Brain: 127
+  Esophagus/Stomach: 104
+  Bone: 101
+  Bowel: 99
+  Soft Tissue: 99
+  Breast: 96
+  Head and Neck: 94
+  Myeloid: 88
+  Ovary/Fallopian Tube: 76
+  Kidney: 74
+  Pancreas: 68
+  Peripheral Nervous System: 62
+  Biliary Tract: 45
+  Fibroblast: 45
+  Uterus: 44
+  Bladder/Urinary Tract: 39
+  Pleura: 36
+  Liver: 29
+  Cervix: 26
+  Thyroid: 26
+  Eye: 24
+  Prostate: 15
+  Normal: 13
+  Testis: 12
+  Ampulla of Vater: 5
+  Muscle: 5
+  Vulva/Vagina: 5
+  Adrenal Gland: 2
+  Hair: 2
+  Other: 2
+  Embryonal: 1
+oncotreeprimarydisease:
+  Non-Small Cell Lung Cancer: 165
+  Non-Cancerous: 151
+  Melanoma: 135
+  Mature B-Cell Neoplasms: 130
+  Colorectal Adenocarcinoma: 96
+  Adult-Type Diffuse Glioma: 90
+  Head and Neck Squamous Cell Carcinoma: 89
+  Lung Neuroendocrine Tumor: 86
+  Invasive Breast Carcinoma: 83
+  Esophagogastric Adenocarcinoma: 74
+  Ovarian Epithelial Tumor: 72
+  Acute Myeloid Leukemia: 64
+  Pancreatic Adenocarcinoma: 64
+  Renal Cell Carcinoma: 56
+  Neuroblastoma: 53
+  Ewing Sarcoma: 51
+  Endometrial Carcinoma: 37
+  Intraductal Papillary Neoplasm of the Bile Duct: 37
+  Pleural Mesothelioma: 36
+  Bladder Urothelial Carcinoma: 35
+  Osteosarcoma: 35
+  B-Cell Acute Lymphoblastic Leukemia: 33
+  Esophageal Squamous Cell Carcinoma: 30
+  T-Lymphoblastic Leukemia/Lymphoma: 28
+  Rhabdomyosarcoma: 25
+  Hepatocellular Carcinoma: 24
+  Embryonal Tumor: 21
+  Myeloproliferative Neoplasms: 18
+  Mature T and NK Neoplasms: 17
+  Non-Hodgkin Lymphoma: 16
+  Rhabdoid Cancer: 16
+  Cervical Squamous Cell Carcinoma: 15
+  Liposarcoma: 15
+  Ocular Melanoma: 15
+  Anaplastic Thyroid Cancer: 13
+  Undifferentiated Pleomorphic Sarcoma/Malignant Fibrous Histiocytoma/High-Grade Spindle Cell Sarcoma: 13
+  Non-Seminomatous Germ Cell Tumor: 12
+  Leiomyosarcoma: 11
+  Synovial Sarcoma: 10
+  Well-Differentiated Thyroid Cancer: 10
+  Chondrosarcoma: 9
+  Hodgkin Lymphoma: 9
+  Nerve Sheath Tumor: 9
+  Merkel Cell Carcinoma: 8
+  Cervical Adenocarcinoma: 7
+  Intracholecystic Papillary Neoplasm: 7
+  Cutaneous Squamous Cell Carcinoma: 6
+  Prostate Adenocarcinoma: 6
+  Ampullary Carcinoma: 5
+  Breast Ductal Carcinoma In Situ: 5
+  Diffuse Glioma: 5
+  Wilms' Tumor: 5
+  Breast Neoplasm, NOS: 4
+  Chordoma: 4
+  Meningothelial Tumor: 4
+  SMARCA4-deficient undifferentiated tumor: 4
+  Uterine Sarcoma/Mesenchymal: 4
+  Acute Leukemias of Ambiguous Lineage: 3
+  CIC-DUX4 Sarcoma: 3
+  Desmoid/Aggressive Fibromatosis: 3
+  Fibrosarcoma: 3
+  Gestational Trophoblastic Disease: 3
+  Head and Neck Carcinoma, Other: 3
+  Hepatoblastoma: 3
+  Mucosal Melanoma of the Vulva/Vagina: 3
+  Adenosquamous Carcinoma of the Pancreas: 2
+  Adrenocortical Carcinoma: 2
+  Bladder Squamous Cell Carcinoma: 2
+  Clear Cell Sarcoma: 2
+  Epithelioid Sarcoma: 2
+  Extra Gonadal Germ Cell Tumor: 2
+  Medullary Thyroid Cancer: 2
+  Myxofibrosarcoma: 2
+  Retinoblastoma: 2
+  Salivary Carcinoma: 2
+  Small Bowel Cancer: 2
+  Squamous Cell Carcinoma of the Vulva/Vagina: 2
+  Urethral Cancer: 2
+  Alveolar Soft Part Sarcoma: 1
+  Dermatofibrosarcoma Protuberans: 1
+  Gastrointestinal Neuroendocrine Tumors: 1
+  Gastrointestinal Stromal Tumor: 1
+  Giant Cell Tumor of Bone: 1
+  Glassy Cell Carcinoma of the Cervix: 1
+  Hepatocellular Carcinoma plus Intrahepatic Cholangiocarcinoma: 1
+  Hereditary Spherocytosis: 1
+  Mixed Cervical Carcinoma: 1
+  Other: 1
+  Ovarian Cancer, Other: 1
+  Ovarian Germ Cell Tumor: 1
+  Pancreatic Neuroendocrine Tumor: 1
+  Pediatric-Type Diffuse High-Grade Glioma: 1
+  Poorly Differentiated Thyroid Cancer: 1
+  Prostate Neuroendocrine Carcinoma: 1
+  Prostate Small Cell Carcinoma: 1
+  Sarcoma, NOS: 1
+  Sex Cord Stromal Tumor: 1
+  Small Cell Carcinoma of the Cervix: 1
+  Small Cell Neuroendocrine Carcinoma of the Cervix: 1
+oncotreesubtype:
+  Melanoma: 109
+  Lung Adenocarcinoma: 91
+  Small Cell Lung Cancer: 82
+  Colon Adenocarcinoma: 74
+  Glioblastoma, IDH-Wildtype: 67
+  Pancreatic Adenocarcinoma: 64
+  Oral Cavity Squamous Cell Carcinoma: 62
+  Neuroblastoma: 53
+  Ewing Sarcoma: 51
+  Acute Myeloid Leukemia: 42
+  Breast Invasive Ductal Carcinoma: 40
+  Matched Normal: 40
+  Bladder Urothelial Carcinoma: 35
+  Osteosarcoma: 34
+  Plasma Cell Myeloma: 34
+  Stomach Adenocarcinoma: 34
+  B-Cell Acute Lymphoblastic Leukemia: 33
+  Diffuse Large B-Cell Lymphoma, NOS: 32
+  Lung Squamous Cell Carcinoma: 32
+  Esophageal Squamous Cell Carcinoma: 30
+  Intrahepatic Cholangiocarcinoma: 29
+  Renal Clear Cell Carcinoma: 28
+  Endometrial Carcinoma: 26
+  Renal Cell Carcinoma: 25
+  Hepatocellular Carcinoma: 24
+  T-Cell Acute Lymphoblastic Leukemia: 24
+  Burkitt Lymphoma: 23
+  High-Grade Serous Ovarian Cancer: 23
+  Serous Ovarian Cancer: 23
+  Invasive Breast Carcinoma: 22
+  Pleural Mesothelioma, Epithelioid Type: 21
+  Cutaneous Melanoma: 20
+  Astrocytoma, IDH-Mutant: 19
+  Chronic Myeloid Leukemia, BCR-ABL1+: 18
+  Esophageal Adenocarcinoma: 17
+  Cervical Squamous Cell Carcinoma: 15
+  Rectal Adenocarcinoma: 15
+  Uveal Melanoma: 15
+  Breast Invasive Lobular Carcinoma: 14
+  Large Cell Lung Carcinoma: 14
+  Non-Small Cell Lung Cancer: 14
+  Anaplastic Thyroid Cancer: 13
+  Undifferentiated Pleomorphic Sarcoma/Malignant Fibrous Histiocytoma/High-Grade Spindle Cell Sarcoma: 13
+  Alveolar Rhabdomyosarcoma: 12
+  Embryonal Rhabdomyosarcoma: 11
+  Leiomyosarcoma: 11
+  Head and Neck Squamous Cell Carcinoma: 10
+  Larynx Squamous Cell Carcinoma: 10
+  Synovial Sarcoma: 10
+  Clear Cell Ovarian Cancer: 9
+  Embryonal Carcinoma: 9
+  Fibroblast, Bone: 9
+  Hodgkin Lymphoma: 9
+  Malignant Peripheral Nerve Sheath Tumor: 9
+  Rhabdoid Cancer: 9
+  Mantle Cell Lymphoma: 8
+  Medulloblastoma, NOS: 8
+  Merkel Cell Carcinoma: 8
+  Non-Hodgkin Lymphoma: 8
+  Transformed cell line: 8
+  Tubular Stomach Adenocarcinoma: 8
+  Anaplastic Large-Cell Lymphoma ALK Positive: 7
+  Diffuse Type Stomach Adenocarcinoma: 7
+  Extrahepatic Cholangiocarcinoma: 7
+  Extrarenal Rhabdoid Cancer: 7
+  Fibroblast, Skin: 7
+  Pleural Mesothelioma, Biphasic Type: 7
+  Uterine Carcinosarcoma/Uterine Malignant Mixed Mullerian Tumor: 7
+  AML, NOS: 6
+  Acral Melanoma: 6
+  Atypical Teratoid/Rhabdoid Tumor: 6
+  Chondrosarcoma: 6
+  Cutaneous Squamous Cell Carcinoma: 6
+  Endometrioid Ovarian Cancer: 6
+  Fibroblast, Breast: 6
+  Fibroblast, Lung: 6
+  Follicular Thyroid Cancer: 6
+  Immortalized Epithelial Cells, Retinal: 6
+  Liposarcoma: 6
+  Lung Adenosquamous Carcinoma: 6
+  Mucinous Ovarian Cancer: 6
+  Primary Effusion Lymphoma: 6
+  Prostate Adenocarcinoma: 6
+  Activated B-cell Type: 5
+  Acute Monoblastic/Monocytic Leukemia: 5
+  Ampullary Carcinoma: 5
+  Breast Ductal Carcinoma In Situ: 5
+  Breast Invasive Carcinoma, NOS: 5
+  Chronic Lymphocytic Leukemia/Small Lymphocytic Lymphoma: 5
+  Dedifferentiated Liposarcoma: 5
+  Endocervical Adenocarcinoma: 5
+  Gallbladder Adenocarcinoma, NOS: 5
+  Germinal Center B-Cell Type: 5
+  Hairy Cell Leukemia: 5
+  Immortalized Epithelial Cells, Prostate: 5
+  Mature B-Cell Neoplasms: 5
+  Pleural Mesothelioma: 5
+  Wilms' Tumor: 5
+  AML with Myelodysplasia-Related Changes: 4
+  Breast Neoplasm, NOS: 4
+  Colorectal Adenocarcinoma: 4
+  Fibroblast: 4
+  Fibroblast, Lymphoid: 4
+  Giant Cell Carcinoma of the Lung: 4
+  Gliosarcoma: 4
+  Hypopharynx Squamous Cell Carcinoma: 4
+  Immortalized Breast Cells: 4
+  Immortalized Epithelial Cells, Lung: 4
+  Lung Carcinoid: 4
+  Medulloblastoma, Group 3: 4
+  Meningioma: 4
+  Natural Killer (NK) Cell Lymphoblastic Leukemia/Lymphoma (NKCLL): 4
+  Papillary Thyroid Cancer: 4
+  SMARCA4-deficient undifferentiated tumor: 4
+  Transformed cell line, B lymphoblast: 4
+  Acute Leukemias of Ambiguous Lineage: 3
+  Anaplastic Large-Cell Lymphoma ALK Negative: 3
+  CIC-DUX4 Sarcoma: 3
+  Chordoma: 3
+  Choriocarcinoma: 3
+  Desmoid/Aggressive Fibromatosis: 3
+  Fibroblast, Colorectal: 3
+  Fibroblast, Soft Tissue: 3
+  Fibrosarcoma: 3
+  Hepatoblastoma: 3
+  Immortalized Astrocytes: 3
+  Immortalized Embyonic Kidney Cells: 3
+  Mature T and NK Neoplasms: 3
+  Mucinous Adenocarcinoma of the Colon and Rectum: 3
+  Mucosal Melanoma of the Vulva/Vagina: 3
+  Myeloid Leukemia Associated with Down Syndrome: 3
+  Pleural Mesothelioma, Sarcomatoid Type: 3
+  Primitive Neuroectodermal Tumor: 3
+  Signet Ring Cell Carcinoma of the Stomach: 3
+  Small Cell Carcinoma of the Ovary: 3
+  Uterine Adenosquamous Carcinoma: 3
+  Well-Differentiated Liposarcoma: 3
+  Adenosquamous Carcinoma of the Pancreas: 2
+  Adrenocortical Carcinoma: 2
+  Adult-Type Diffuse Glioma: 2
+  Bladder Squamous Cell Carcinoma: 2
+  Breast Invasive Cancer, NOS: 2
+  Cervical Adenocarcinoma: 2
+  Clear Cell Sarcoma: 2
+  Dedifferentiated Chondrosarcoma: 2
+  Duodenal Adenocarcinoma: 2
+  Epithelioid Sarcoma: 2
+  Extra Gonadal Germ Cell Tumor: 2
+  Follicular Lymphoma: 2
+  Gallbladder Cancer: 2
+  Immortalized Blood: 2
+  Immortalized Human Chondrocytes: 2
+  Medullary Thyroid Cancer: 2
+  Myxofibrosarcoma: 2
+  NUT Carcinoma of the Lung: 2
+  NUT Midline Carcinoma of the Head and Neck: 2
+  Oropharynx Squamous Cell Carcinoma: 2
+  Papillary Renal Cell Carcinoma: 2
+  Retinoblastoma: 2
+  Sezary Syndrome: 2
+  Small Cell Carcinoma of the Stomach: 2
+  Splenic Marginal Zone Lymphoma: 2
+  Squamous Cell Carcinoma of the Vulva/Vagina: 2
+  Teratoma: 2
+  Urethral Urothelial Carcinoma: 2
+  Uterine Leiomyosarcoma: 2
+  AML with Minimal Differentiation: 1
+  Acute Megakaryoblastic Leukemia: 1
+  Acute Myelomonocytic Leukemia: 1
+  Acute Promyelocytic Leukemia: 1
+  Adenocarcinoma of the Gastroesophageal Junction: 1
+  Adenoid Cystic Carcinoma: 1
+  Adenosquamous Carcinoma of the Stomach: 1
+  Alveolar Soft Part Sarcoma: 1
+  Astrocytoma, IDH-Mutant, Grade 2: 1
+  Astrocytoma, IDH-Mutant, Grade 3: 1
+  B lymphoblast: 1
+  B-Cell Prolymphocytic Leukemia: 1
+  Brenner Tumor, Malignant: 1
+  Cholangiocarcinoma: 1
+  Dedifferentiated Chordoma: 1
+  Dermatofibrosarcoma Protuberans: 1
+  Diffuse Midline Glioma, H3 K27-Altered: 1
+  Endometrial Stromal Sarcoma: 1
+  Extraskeletal Myxoid Chondrosarcoma: 1
+  Fibroblast, NOS: 1
+  Fibroblast, Upper Aerodigestive: 1
+  Fibroblast, Urinary Tract: 1
+  Follicular T-Cell Lymphoma: 1
+  Gastrointestinal Stromal Tumor: 1
+  Giant Cell Tumor of Bone: 1
+  Glassy Cell Carcinoma of the Cervix: 1
+  Glioma, NOS: 1
+  Granulosa Cell Tumor: 1
+  Head and Neck Carcinoma, Other: 1
+  Hepatocellular Carcinoma plus Intrahepatic Cholangiocarcinoma: 1
+  Hepatosplenic T-cell Lymphoma: 1
+  High-Grade B-Cell Lymphoma, with MYC and BCL2 and/or BCL6 Rearrangements: 1
+  High-Grade Neuroendocrine Carcinoma of the Colon and Rectum: 1
+  Hyperplasia, Prostate: 1
+  Immortalized Cardiomyocytes: 1
+  Immortalized Cholangiocyte, Highly Differentiated: 1
+  Immortalized Endothelial Cells, Endoneurial: 1
+  Immortalized Endothelial Cells, Umbilical Vein: 1
+  Immortalized Epithelial Cells, CNS: 1
+  Immortalized Epithelial Cells, Corneal: 1
+  Immortalized Epithelial Cells, Renal: 1
+  Immortalized Hair Follicle Inner Root Sheath Cells: 1
+  Immortalized Hair Germinal Matrix Cells: 1
+  Immortalized Human Intervertebral Disc Cartilage Endplate-derived Stem Cells: 1
+  Immortalized Human Pancreatic Mesenchymal Stem Cells: 1
+  Immortalized Liver Cells: 1
+  Immortalized Lung Cells: 1
+  Immortalized MPLC Cells: 1
+  Immortalized Neuronal Progenitor Cells: 1
+  Immortalized Ovarian Cells: 1
+  Immortalized Pancreatic Stromal Cells: 1
+  Immortalized Prostate Cells: 1
+  Immortalized Skeletal Muscle Cells: 1
+  Immortalized Smooth Muscle Cells, Intestinal: 1
+  Immortalized Smooth Muscle Cells, Pulmonary artery: 1
+  Immortalized Submandibular Gland Cells: 1
+  Lymphoid Neoplasm: 1
+  Mixed Cervical Carcinoma: 1
+  Mixed Germ Cell Tumor: 1
+  Mixed Ovarian Carcinoma: 1
+  Mucinous Stomach Adenocarcinoma: 1
+  Mucoepidermoid Carcinoma: 1
+  Mucoepidermoid Carcinoma of the Lung: 1
+  Mycosis Fungoides: 1
+  Myxoid/Round-Cell Liposarcoma: 1
+  Osteoblastic Osteosarcoma: 1
+  Ovarian Cancer, Other: 1
+  Pancreatic Neuroendocrine Tumor: 1
+  Pleomorphic Rhabdomyosarcoma: 1
+  Poorly Differentiated Non-Small Cell Lung Cancer: 1
+  Poorly Differentiated Thyroid Cancer: 1
+  Primary Mediastinal (Thymic) Large B-Cell Lymphoma (PMBL): 1
+  Prostate Neuroendocrine Carcinoma: 1
+  Prostate Small Cell Carcinoma: 1
+  Renal Medullary Carcinoma: 1
+  Rhabdomyosarcoma: 1
+  Sacrococcygeal teratoma: 1
+  Sarcoma, NOS: 1
+  Sinonasal Squamous Cell Carcinoma: 1
+  Small Cell Carcinoma of the Cervix: 1
+  Small Cell Neuroendocrine Carcinoma of the Cervix: 1
+  Spherocytosis: 1
+  T-Cell Large Granular Lymphocytic Leukemia: 1
+  T-Cell Prolymphocytic Leukemia: 1
+  Uterine Clear Cell Carcinoma: 1
+  Uterine Sarcoma/Mesenchymal: 1
+  Yolk Sac Tumor: 1
+  immortalized Smooth Muscle Cells, Coronary artery: 1
+oncotreecode:
+  MEL: 109
+  LUAD: 91
+  SCLC: 82
+  COAD: 74
+  GB: 67
+  PAAD: 64
+  OCSC: 62
+  NBL: 53
+  ES: 51
+  AML: 42
+  IDC: 40
+  BLCA: 35
+  OS: 34
+  PCM: 34
+  STAD: 34
+  DLBCLNOS: 32
+  LUSC: 32
+  ESCC: 30
+  IHCH: 29
+  CCRCC: 28
+  UCEC: 26
+  RCC: 25
+  HCC: 24
+  BL: 23
+  HGSOC: 23
+  SOC: 23
+  BRCA: 22
+  PLEMESO: 21
+  SKCM: 20
+  ASTR: 19
+  CMLBCRABL1: 18
+  ESCA: 17
+  CESC: 15
+  READ: 15
+  UM: 15
+  ILC: 14
+  LCLC: 14
+  NSCLC: 14
+  MFH: 13
+  THAP: 13
+  ARMS: 12
+  ERMS: 11
+  LMS: 11
+  HNSC: 10
+  LXSC: 10
+  SYNS: 10
+  CCOV: 9
+  EMBCA: 9
+  HL: 9
+  MPNST: 9
+  MRT: 9
+  MBLNOS: 8
+  MCC: 8
+  MCL: 8
+  NHL: 8
+  TSTAD: 8
+  ALCLALKP: 7
+  DSTAD: 7
+  EHCH: 7
+  PLBMESO: 7
+  UCS: 7
+  ACRM: 6
+  AMLNOS: 6
+  ATRT: 6
+  CHS: 6
+  CSCC: 6
+  EOV: 6
+  LIPO: 6
+  LUAS: 6
+  MOV: 6
+  PEL: 6
+  PRAD: 6
+  THFO: 6
+  ABC: 5
+  AMOL: 5
+  AMPCA: 5
+  BRCNOS: 5
+  CLLSLL: 5
+  DCIS: 5
+  DDLS: 5
+  ECAD: 5
+  GBAD: 5
+  GCB: 5
+  HCL: 5
+  MBN: 5
+  PLMESO: 5
+  WT: 5
+  AMLMRC: 4
+  BNNOS: 4
+  COADREAD: 4
+  GCLC: 4
+  GSARC: 4
+  HPHSC: 4
+  LUCA: 4
+  MBLG3: 4
+  MNG: 4
+  NKCLL: 4
+  THPA: 4
+  ALAL: 3
+  ALCLALKN: 3
+  CHDM: 3
+  DES: 3
+  FIBS: 3
+  LIHB: 3
+  MACR: 3
+  MLADS: 3
+  MTNN: 3
+  PLSMESO: 3
+  PNET: 3
+  SCCO: 3
+  SSRCC: 3
+  UASC: 3
+  UCCA: 3
+  VMM: 3
+  WDLS: 3
+  ACC: 2
+  ADIFG: 2
+  BLSC: 2
+  BRCANOS: 2
+  CCS: 2
+  CEAD: 2
+  DA: 2
+  DDCHS: 2
+  EGCT: 2
+  EPIS: 2
+  FL: 2
+  GBC: 2
+  MFS: 2
+  NMCHN: 2
+  NUTCL: 2
+  OPHSC: 2
+  PAASC: 2
+  PRCC: 2
+  RBL: 2
+  SMZL: 2
+  SS: 2
+  STSC: 2
+  THME: 2
+  TT: 2
+  UCU: 2
+  ULMS: 2
+  VSC: 2
+  ACYC: 1
+  AMKL: 1
+  AMLMD: 1
+  AMML: 1
+  ASPS: 1
+  ASTR2: 1
+  ASTR3: 1
+  BPLL: 1
+  BTMOV: 1
+  CEGCC: 1
+  CHOL: 1
+  DDCHDM: 1
+  DFSP: 1
+  DMG: 1
+  EMCHS: 1
+  ESS: 1
+  FTCL: 1
+  GCTB: 1
+  GEJ: 1
+  GIST: 1
+  GNOS: 1
+  GRCT: 1
+  HCCIHCH: 1
+  HGBCLMYCBCL2: 1
+  HGNEC: 1
+  HSTCL: 1
+  LNM: 1
+  LUMEC: 1
+  MCCE: 1
+  MRC: 1
+  MRLS: 1
+  MSTAD: 1
+  MUCC: 1
+  MXOV: 1
+  MYCF: 1
+  NSCLCPD: 1
+  OHNCA: 1
+  OMGCT: 1
+  OOVC: 1
+  OSOS: 1
+  PANET: 1
+  PLRMS: 1
+  PMBL: 1
+  PRNE: 1
+  PRSCC: 1
+  RMS: 1
+  SARCNOS: 1
+  SCCE: 1
+  SNSC: 1
+  STAS: 1
+  THPD: 1
+  TLGL: 1
+  TPLL: 1
+  TYST: 1
+  UCCC: 1
+  USARC: 1
+
+# Special cohort names. Use one of these as cancer_types. oncotree_column is ignored.
+PANCANCER:
+  column: oncotreeprimarydisease
+  rule: Every model whose primary disease does not contain NON-CANCER.
+  exclude_contains:
+  - NON-CANCER
+  cell_lines: 2003
+SOLID:
+  column: oncotreeprimarydisease
+  rule: Same models as PANCANCER, then drop the primary diseases in exclude_values.
+  exclude_contains:
+  - NON-CANCER
+  exclude_values:
+  - Acute Lymphoblastic Leukemia
+  - Acute Myeloid Leukemia
+  - Acute Myeloid Leukemia transformed from MPN
+  - B Acute Lymphoblastic Leukemia
+  - Burkitt Lymphoma
+  - Chronic Lymphocytic Leukemia
+  - Chronic Myelogenous Leukemia
+  - Diffuse Large B-Cell Lymphoma
+  - Lymphoma
+  - Mixed Phenotype Acute Leukemia
+  - Plasma Cell Myeloma
+  - T Acute Lymphoblastic Leukemia
+  cell_lines: 1939

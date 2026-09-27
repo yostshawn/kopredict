@@ -10,3 +10,4 @@ networkx>=3.0
 pyoncoprint>=0.2.6
 s3fs>=2024.1
 openpyxl>=3.1
+PyYAML>=6.0

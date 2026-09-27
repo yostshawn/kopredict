@@ -818,12 +818,6 @@ def _cancer_models(models: pd.DataFrame) -> list[str]:
     return keep.tolist()
 
 
-def _dependency_feature_blocks(scores: pd.DataFrame, columns: list[str], sensitive: str, resistant: str) -> list[pd.DataFrame]:
-    aligned = scores.reindex(columns=columns)
-    zscores = zscore_rows(aligned)
-    return list(threshold_high_low(zscores, resistant, sensitive))
-
-
 def _write_dependency(scores: pd.DataFrame, path: Path) -> None:
     # Loader expects rows = cell lines, columns = genes plus a cellline column.
     wide = scores.T.reset_index()
@@ -1099,13 +1093,7 @@ def _prepare_logged(data_dir: Path, depmap_release: str) -> None:
         aligned.loc[:, screened] = aligned.loc[:, screened].fillna(0)
         add(aligned)
         del aligned
-    del pair_fusions, gene_fusions, gene_fusion_c
-    for block in _dependency_feature_blocks(crispr, cancer_lines, "sensitivecrispr", "resistantcrispr"):
-        add(block)
-    del crispr
-    for block in _dependency_feature_blocks(rnai, cancer_lines, "sensitivernai", "resistantrnai"):
-        add(block)
-    del rnai
+    del pair_fusions, gene_fusions, gene_fusion_c, crispr, rnai
     add(_suffix_features(ko, "ko"))
     add(_suffix_features(altered, "altered"))
     del ko, altered, amp_a, hom_a, dam_a, hot_a, lof_a, fus_a, omics_frames, genes_all
@@ -1127,14 +1115,23 @@ def _prepare_logged(data_dir: Path, depmap_release: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Build kopredict parquet inputs from data/raw.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build the local tables and the binary feature matrix from data/raw.\n\n"
+            "  kopredict-prepare\n"
+            "  kopredict-prepare --depmap-release 25Q3\n"
+            "  kopredict-prepare --help\n\n"
+            "Use the same --depmap-release value you passed to kopredict-download."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--data-dir", default=None, help="Processed output directory (raw files are data/raw).")
     parser.add_argument(
         "--depmap-release",
         default=DEFAULT_DEPMAP_RELEASE,
         metavar="QUARTER",
         help=(
-            "DepMap Public quarter used to check raw files against metadata/downloads.csv "
+            "DepMap Public quarter used to check raw files against metadata/20260920_DepMap_available_downloads.csv "
             f"(default: {DEFAULT_DEPMAP_RELEASE}). Use the same value passed to kopredict-download."
         ),
     )

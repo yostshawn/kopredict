@@ -1,0 +1,66 @@
+# Search settings for kopredict.
+# Run the defaults with:  kopredict
+# Or copy this file, edit it, and run:  kopredict path/to/copy.yaml
+# Options:  kopredict --help
+
+# Gene whose CRISPR or RNAi score is the outcome.
+target: IPPK
+
+# crispr or rnai
+dataset: crispr
+
+# Cohort matched against oncotree_column. Use a string or a list.
+# Allowed values, and what SOLID and PANCANCER include, are in metadata/oncotree.yaml.
+# Leave null when cohort_csv is set.
+cancer_types: SOLID
+
+# CSV with columns oncotree_column and name. See metadata/example_lung_cohort.csv.
+# Leave null when cancer_types is set.
+cohort_csv: null
+
+# Model table column compared with cancer_types.
+oncotree_column: oncotreeprimarydisease
+
+# How later feature blocks narrow the cohort: AND or OR.
+progression: AND
+
+# Optional background filter. Semicolons separate rules. Example:
+# IPPK,omics,tpmlogp1_zscore,greater,1.64,false
+group_options: null
+
+# Folder of prepared parquet files. null uses ./data or KOPREDICT_DATA_DIR.
+data_dir: null
+
+# Feature matrix. null uses <data_dir>/final_depmap_features_26Q1.parquet.gz.
+features_path: null
+
+# Plots and summaries. null uses <data_dir>/output.
+output_dir: null
+
+# Shuffles used to set the p-value cutoff.
+n_permutations: 50
+
+# Parallel shuffle workers. 1 runs them one at a time.
+n_jobs: 1
+
+# Oncoplot color scale.
+vmin: -1
+vmax: 1
+
+# Print the top N features by Wilcoxon p-value. null turns this off.
+debug_wilcox: null
+
+# Skip the search when fewer than this many cell lines are essential. 0 disables the check.
+min_essential_cell_lines: 1
+
+# Raw score at or below this counts as essential. null means -1 for crispr and -0.5 for rnai.
+essentiality_threshold: null
+
+# Feature subsets kept at each later step of the tree. 0 keeps every subset that passes.
+max_next_feature_subsets: 3
+
+# Include expression high/low features. They are dropped when false.
+keep_lowexp_highexp: false
+
+# Include Sanger, Gygi, and RPPA features. They are dropped when false.
+keep_depmapprot_sangerprot: false

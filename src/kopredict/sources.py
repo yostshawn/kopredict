@@ -1,21 +1,26 @@
 """Paths and loaders for metadata CSVs that list public inputs.
 
-Which DepMap files to fetch is metadata/depmap_files.csv. Publication workbooks
-are metadata/additional.csv. Signed DepMap links live in metadata/downloads.csv.
+Which DepMap files to fetch is metadata/default_depmap_files_to_download_and_process.csv.
+Publication workbooks are metadata/additional_datasets_to_download.csv.
+Signed DepMap links live in metadata/20260920_DepMap_available_downloads.csv.
 """
 
 from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 
+DEPMAP_DOWNLOADS_CSV = "20260920_DepMap_available_downloads.csv"
+DEPMAP_FILES_CSV = "default_depmap_files_to_download_and_process.csv"
+ADDITIONAL_DATASETS_CSV = "additional_datasets_to_download.csv"
+
 def metadata_dir() -> Path:
-    """Directory of downloads.csv, depmap_files.csv, and additional.csv."""
+    """Directory of the DepMap catalog, the file list, and the extra datasets."""
     candidates = [
         Path(__file__).resolve().parents[2] / "metadata",
         Path.cwd() / "metadata",
     ]
     for path in candidates:
-        if (path / "downloads.csv").is_file() and (path / "depmap_files.csv").is_file():
+        if (path / DEPMAP_DOWNLOADS_CSV).is_file() and (path / DEPMAP_FILES_CSV).is_file():
             return path
     searched = ", ".join(str(path) for path in candidates)
     raise FileNotFoundError(f"metadata directory not found. Looked in: {searched}")
@@ -29,20 +34,20 @@ def _read_metadata_csv(name: str) -> pd.DataFrame:
 
 
 def load_depmap_files() -> pd.DataFrame:
-    """Rows of release and filename to pull from metadata/downloads.csv."""
-    frame = _read_metadata_csv("depmap_files.csv")
+    """Rows of release and filename to pull from the DepMap download catalog."""
+    frame = _read_metadata_csv(DEPMAP_FILES_CSV)
     for column in ("release", "filename"):
         if column not in frame.columns:
-            raise ValueError(f"metadata/depmap_files.csv is missing column {column!r}")
+            raise ValueError(f"metadata/{DEPMAP_FILES_CSV} is missing column {column!r}")
     return frame
 
 
 def load_additional() -> pd.DataFrame:
     """Publication files that are not rows in the DepMap catalog."""
-    frame = _read_metadata_csv("additional.csv")
+    frame = _read_metadata_csv(ADDITIONAL_DATASETS_CSV)
     for column in ("id", "local_filename", "url", "citation", "download"):
         if column not in frame.columns:
-            raise ValueError(f"metadata/additional.csv is missing column {column!r}")
+            raise ValueError(f"metadata/{ADDITIONAL_DATASETS_CSV} is missing column {column!r}")
     return frame
 
 
@@ -50,5 +55,5 @@ def additional_record(record_id: str) -> pd.Series:
     frame = load_additional()
     hit = frame[frame["id"] == record_id]
     if hit.empty:
-        raise KeyError(f"metadata/additional.csv has no id {record_id!r}")
+        raise KeyError(f"metadata/{ADDITIONAL_DATASETS_CSV} has no id {record_id!r}")
     return hit.iloc[0]

@@ -13,12 +13,19 @@ from pathlib import Path
 import pandas as pd
 
 from kopredict.local_data import get_data_dir
-from kopredict.sources import load_additional, load_depmap_files, metadata_dir
+from kopredict.sources import (
+    ADDITIONAL_DATASETS_CSV,
+    DEPMAP_DOWNLOADS_CSV,
+    DEPMAP_FILES_CSV,
+    load_additional,
+    load_depmap_files,
+    metadata_dir,
+)
 
-# Portal catalog with signed URLs. A browser save replaces metadata/downloads.csv.
+# Portal catalog with signed URLs. A browser save replaces the dated DepMap catalog CSV.
 CATALOG_URL = "https://depmap.org/portal/api/download/files"
 DEFAULT_DEPMAP_RELEASE = "26Q1"
-# In metadata/depmap_files.csv this release token follows --depmap-release.
+# In the default DepMap file list this release token follows --depmap-release.
 DEPMAP_RELEASE_TOKEN = "{depmap}"
 
 
@@ -100,7 +107,7 @@ def depmap_release_label(token: str, catalog: pd.DataFrame) -> str:
 
 
 def files_for_release(depmap_release: str) -> tuple[tuple[str, str], ...]:
-    """Expand metadata/depmap_files.csv, substituting the selected DepMap quarter."""
+    """Expand the default DepMap file list, substituting the selected DepMap quarter."""
     rows = []
     for _, row in load_depmap_files().iterrows():
         release = str(row["release"]).strip()
@@ -110,14 +117,14 @@ def files_for_release(depmap_release: str) -> tuple[tuple[str, str], ...]:
         if release and filename:
             rows.append((release, filename))
     if not rows:
-        raise SystemExit("metadata/depmap_files.csv has no files to download.")
+        raise SystemExit(f"metadata/{DEPMAP_FILES_CSV} has no files to download.")
     return tuple(rows)
 
 
 def require_catalog_files(catalog: pd.DataFrame, depmap_release: str) -> tuple[tuple[str, str], ...]:
     if "url" not in catalog.columns:
         raise SystemExit(
-            "Catalog has no url column. Replace metadata/downloads.csv with a fresh save of "
+            f"Catalog has no url column. Replace metadata/{DEPMAP_DOWNLOADS_CSV} with a fresh save of "
             f"{CATALOG_URL}."
         )
     wanted = files_for_release(depmap_release)
@@ -154,7 +161,7 @@ def download_pinned(catalog_path: Path, data_dir: Path, depmap_release: str) -> 
         if not expected:
             raise SystemExit(
                 f"No md5_hash for {release} / {filename} in {catalog_path}. "
-                "Replace metadata/downloads.csv with a fresh catalog."
+                f"Replace metadata/{DEPMAP_DOWNLOADS_CSV} with a fresh catalog."
             )
         if _already_valid(dest, expected):
             continue
@@ -167,8 +174,8 @@ def download_pinned(catalog_path: Path, data_dir: Path, depmap_release: str) -> 
 
 
 def verify_downloaded_files(data_dir: Path, depmap_release: str, catalog_path: Path | None = None) -> None:
-    """Stop if any input in metadata/depmap_files.csv or additional.csv is missing or mismatched."""
-    catalog_path = catalog_path or (metadata_dir() / "downloads.csv")
+    """Stop if any listed input is missing or its checksum does not match."""
+    catalog_path = catalog_path or (metadata_dir() / DEPMAP_DOWNLOADS_CSV)
     if not catalog_path.is_file():
         raise SystemExit(f"Catalog not found: {catalog_path}")
     catalog = _load_catalog(catalog_path)
@@ -198,7 +205,7 @@ def verify_downloaded_files(data_dir: Path, depmap_release: str, catalog_path: P
         dest = raw / filename
         label = str(row["id"]).strip()
         if not dest.is_file():
-            problems.append(f"{filename}: missing ({dest}). Listed as {label} in metadata/additional.csv.")
+            problems.append(f"{filename}: missing ({dest}). Listed as {label} in metadata/{ADDITIONAL_DATASETS_CSV}.")
             continue
         expected = str(row["md5_hash"]).strip().lower() if "md5_hash" in row.index else ""
         if expected and _md5(dest) != expected:
@@ -213,7 +220,7 @@ def verify_downloaded_files(data_dir: Path, depmap_release: str, catalog_path: P
 
 
 def download_additional(data_dir: Path) -> None:
-    """Fetch publication files listed in metadata/additional.csv."""
+    """Fetch publication files listed in the additional-datasets CSV."""
     raw = _raw_dir(data_dir)
     for _, row in load_additional().iterrows():
         dest = raw / str(row["local_filename"]).strip()
@@ -231,7 +238,7 @@ def download_additional(data_dir: Path) -> None:
         if dest.is_file() and not expected:
             head = dest.read_bytes()[:4]
             if head.startswith(b"PK"):
-                print(f"OK {dest.name} (exists; metadata/additional.csv has no md5_hash)")
+                print(f"OK {dest.name} (exists; metadata/{ADDITIONAL_DATASETS_CSV} has no md5_hash)")
                 continue
             print(f"{dest.name} exists but is not a workbook; downloading again.")
         if not url:
@@ -297,7 +304,7 @@ def fetch_url_catalog(data_dir: Path) -> Path | None:
 
 def bundled_catalog(data_dir: Path) -> Path | None:
     del data_dir
-    candidates = [metadata_dir() / "downloads.csv"]
+    candidates = [metadata_dir() / DEPMAP_DOWNLOADS_CSV]
     for path in candidates:
         if path.is_file() and _catalog_has_urls(path):
             return path
@@ -307,13 +314,23 @@ def bundled_catalog(data_dir: Path) -> Path | None:
 def _catalog_instructions() -> str:
     return (
         "No catalog with download URLs was found. "
-        f"Open {CATALOG_URL} in a browser, complete the check, and replace metadata/downloads.csv "
+        f"Open {CATALOG_URL} in a browser, complete the check, and replace metadata/{DEPMAP_DOWNLOADS_CSV} "
         "with that file. Signed URLs expire, so replace it with a fresh download when fetches fail."
     )
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Download pinned files for kopredict-prepare.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Download the public files used by kopredict-prepare.\n\n"
+            "  kopredict-download\n"
+            "  kopredict-download --depmap-release 25Q3\n"
+            "  kopredict-download --help\n\n"
+            "Replace metadata/20260920_DepMap_available_downloads.csv with a fresh browser save from the DepMap\n"
+            "catalog before the first download, and again when a signed URL expires."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--depmap-release",
         default=DEFAULT_DEPMAP_RELEASE,
@@ -328,7 +345,7 @@ def main(argv: list[str] | None = None) -> None:
         "--catalog",
         default=None,
         help=(
-            "CSV from the DepMap download-URL catalog. Default: metadata/downloads.csv. "
+            "CSV from the DepMap download-URL catalog. Default: metadata/20260920_DepMap_available_downloads.csv. "
             "Replace that file with a fresh browser save when the signed URLs expire."
         ),
     )

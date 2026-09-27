@@ -1,32 +1,57 @@
 """kopredict command-line implementation.
 
 Flow:
-  * Parse args, optionally set ``KOPREDICT_DATA_DIR`` and clear parquet caches.
+  * Load a YAML run file (default: metadata/kopredict_default.yaml).
+  * Optionally set ``KOPREDICT_DATA_DIR`` and clear parquet caches.
   * Load the features matrix and strip broad/unwanted feature name patterns.
-  * Load the target's dependency (CRISPR or RNAi) for ``-t`` / ``--target``.
-  * If ``--cohort-csv``: for each model row, resolve cell lines, run
+  * Load the target's dependency (CRISPR or RNAi).
+  * If ``cohort_csv`` is set: for each row, resolve cell lines, run
     ``_run_single_cohort_analysis`` (deferred plot write until significant), then
     write plots per cohort and a combined prediction summary CSV.
-  * Else (``-c``): resolve one cohort from ``--oncotree-column`` + cancer type strings, run
+  * Otherwise resolve one cohort from ``oncotree_column`` and ``cancer_types``, and run
     a single analysis under ``{output_dir}/{target}/{dataset}/`` with plots.
 """
+
+from __future__ import annotations
 
 import argparse
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
+import yaml
 
 from kopredict.cohort_summary import build_cohort_summary_rows, safe_cohort_folder_name
-from kopredict.database import celllines_for_single_cohort_row, return_celllines_matching_oncotree_filter
+from kopredict.database import (
+    celllines_for_cohort_names,
+    parse_cohort_name_list,
+    return_celllines_matching_oncotree_filter,
+    validate_cohort_table,
+)
 from kopredict.features import get_target_df
+from kopredict.local_data import get_data_dir
 from kopredict.permutation import estimate_significant_pvalue_cutoff
 from kopredict.pipeline import run_prediction_for_biomarker_given_target_dataset
-from kopredict.local_data import get_data_dir
 from kopredict.plotting import create_boxplot, create_oncoplot
 from kopredict.prepare import FEATURES_FILENAME
+from kopredict.sources import metadata_dir
+
+_CONFIG_NAME = "kopredict_default.yaml"
+_RUN_HELP = """\
+Find genomic features linked to one gene's CRISPR or RNAi sensitivity.
+
+  kopredict
+  kopredict path/to/run.yaml
+  kopredict --help
+
+Settings are a YAML file. With no path, metadata/kopredict_default.yaml is used.
+Copy that file and change target, dataset, and cancer_types for another search.
+A custom file can omit keys; missing keys are filled from the default file.
+Allowed cancer_types, and what SOLID and PANCANCER include, are in metadata/oncotree.yaml.
+"""
 
 
 def _count_essential_cell_lines(
@@ -70,12 +95,91 @@ def _prediction_summary_csv_basename(
 
 
 def parse_cancer_type_values(s):
-    """Split ``-c`` on commas only; do not strip or change inner/outer spacing."""
+    """Split a comma-separated cohort string. A YAML list is used as given."""
     if s is None or s == "":
         return []
+    if isinstance(s, (list, tuple)):
+        return [str(item) for item in s if str(item) != ""]
     if str(s).strip().lower() in ("none", "null"):
         return []
     return [x for x in str(s).split(",") if x != ""]
+
+
+def _default_config_path() -> Path:
+    return metadata_dir() / _CONFIG_NAME
+
+
+def _read_yaml(path: Path) -> dict:
+    if not path.is_file():
+        raise SystemExit(f"Config not found: {path}")
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise SystemExit(f"{path} must be a YAML mapping of settings.")
+    return loaded
+
+
+def _blank(value) -> bool:
+    return value is None or (isinstance(value, str) and value.strip().lower() in {"", "none", "null"})
+
+
+def load_run_config(path: Path | None) -> SimpleNamespace:
+    """Load a run file, filling any omitted keys from metadata/kopredict_default.yaml."""
+    default_path = _default_config_path()
+    defaults = _read_yaml(default_path)
+    if path is None:
+        loaded = defaults
+        source = default_path
+    else:
+        loaded = _read_yaml(path)
+        unknown = sorted(set(loaded) - set(defaults))
+        if unknown:
+            raise SystemExit(f"Unknown setting(s) in {path}: {', '.join(unknown)}")
+        merged = dict(defaults)
+        merged.update(loaded)
+        loaded = merged
+        source = path
+    dataset = str(loaded.get("dataset", "")).strip().lower()
+    if dataset not in {"crispr", "rnai"}:
+        raise SystemExit(f"dataset must be crispr or rnai (got {loaded.get('dataset')!r}).")
+    progression = str(loaded.get("progression", "AND")).strip().upper()
+    if progression not in {"AND", "OR"}:
+        raise SystemExit(f"progression must be AND or OR (got {loaded.get('progression')!r}).")
+    cancer_types = None if _blank(loaded.get("cancer_types")) else loaded.get("cancer_types")
+    cohort_csv = None if _blank(loaded.get("cohort_csv")) else str(loaded.get("cohort_csv"))
+    if cancer_types and cohort_csv:
+        raise SystemExit("Set cancer_types or cohort_csv, not both.")
+    if not cancer_types and not cohort_csv:
+        raise SystemExit("Set cancer_types or cohort_csv in the YAML file.")
+    debug = loaded.get("debug_wilcox")
+    if isinstance(debug, bool):
+        debug = 10 if debug else None
+    elif debug is not None:
+        debug = int(debug)
+    print(f"Config: {source}")
+    return SimpleNamespace(
+        target=str(loaded["target"]).strip(),
+        dataset=dataset,
+        cancer_types=cancer_types,
+        cohort_csv=cohort_csv,
+        oncotree_column=str(loaded.get("oncotree_column") or "oncotreeprimarydisease"),
+        progression=progression,
+        group_options=None if _blank(loaded.get("group_options")) else str(loaded.get("group_options")),
+        data_dir=None if _blank(loaded.get("data_dir")) else str(loaded.get("data_dir")),
+        features_path=None if _blank(loaded.get("features_path")) else str(loaded.get("features_path")),
+        output_dir=None if _blank(loaded.get("output_dir")) else str(loaded.get("output_dir")),
+        n_permutations=int(loaded.get("n_permutations", 50)),
+        n_jobs=int(loaded.get("n_jobs", 1)),
+        vmin=float(loaded.get("vmin", -1)),
+        vmax=float(loaded.get("vmax", 1)),
+        debug_wilcox=debug,
+        min_essential_cell_lines=int(loaded.get("min_essential_cell_lines", 1)),
+        essentiality_threshold=None if _blank(loaded.get("essentiality_threshold")) else float(loaded.get("essentiality_threshold")),
+        max_next_feature_subsets=int(loaded.get("max_next_feature_subsets", 3)),
+        keep_lowexp_highexp=bool(loaded.get("keep_lowexp_highexp", False)),
+        keep_depmapprot_sangerprot=bool(loaded.get("keep_depmapprot_sangerprot", False)),
+    )
 
 
 def _run_single_cohort_analysis(
@@ -263,169 +367,20 @@ def _run_single_cohort_analysis(
     return feature_tree, target_df_pipeline, summary_rows
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
-        description="kopredict: Predict best biomarker features for a target gene/dataset."
+        description=_RUN_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "-t",
-        "--target",
-        required=True,
-        help="Target gene (e.g. IPPK, BRCA2)",
-    )
-    parser.add_argument(
-        "-d",
-        "--dataset",
-        required=True,
-        choices=("crispr", "rnai"),
-        help="Dependency matrix to use: crispr or rnai (local parquet inputs).",
-    )
-    parser.add_argument(
-        "--data-dir",
-        default=None,
-        help="Directory with local parquet inputs (default: ./data or KOPREDICT_DATA_DIR env).",
-    )
-    cohort = parser.add_mutually_exclusive_group(required=True)
-    cohort.add_argument(
-        "-c",
-        "--cancer-types",
-        default=None,
-        help=(
-            "Comma-separated strings matched exactly in the model column given by "
-            "--oncotree-column (no trimming or case changes)."
-        ),
-    )
-    cohort.add_argument(
-        "--cohort-csv",
-        default=None,
-        metavar="PATH",
-        help=(
-            "CSV with columns oncotree_column and name. Runs one analysis per row. Writes "
-            "YYMMDD_*_prediction_summary.csv under {--output-dir}/{target}/{dataset}/. PDFs are "
-            "written only when a cohort has significant features, under "
-            ".../{dataset}/{oncotree_column}_{name}/."
-        ),
-    )
-    parser.add_argument(
-        "-O",
-        "--oncotree-column",
-        default="oncotreeprimarydisease",
-        help=(
-            "Column in Model_and_OmicsSignatures used with -c (exact header after file load). "
-            "Ignored when --cohort-csv is set."
-        ),
-    )
-    parser.add_argument(
-        "-p",
-        "--progression",
-        type=lambda s: str(s).strip().upper(),
-        choices=("AND", "OR"),
-        default="AND",
-        metavar="AND|OR",
-        help="Feature progression between blocks: AND (intersection) or OR (union). Default: AND.",
-    )
-    parser.add_argument(
-        "-g",
-        "--group-options",
-        default=None,
-        help="Background filter options string (semicolon-separated)",
-    )
-    parser.add_argument(
-        "-f",
-        "--features-path",
-        default=None,
-        help="Path to features parquet (default: data/final_depmap_features_26Q1.parquet.gz).",
-    )
-    parser.add_argument(
-        "-n",
-        "--n-permutations",
-        type=int,
-        default=50,
-        help="Number of permutations for p-value cutoff estimation (default: 50)",
-    )
-    parser.add_argument(
-        "-j",
-        "--n-jobs",
-        type=int,
-        default=1,
-        help="Number of parallel jobs for permutation (default: 1)",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=None,
-        help=(
-            "Base directory for plots and summaries (default: <data-dir>/output, usually data/output). "
-            "PDFs go under {output-dir}/{target}/{dataset}/; with --cohort-csv, "
-            "per-cohort PDFs go under .../{target}/{dataset}/{oncotree_column}_{name}/ when significant."
-        ),
-    )
-    parser.add_argument(
-        "--vmin",
-        type=float,
-        default=-1,
-        help="Oncoplot heatmap vmin (default: -1)",
-    )
-    parser.add_argument(
-        "--vmax",
-        type=float,
-        default=1,
-        help="Oncoplot heatmap vmax (default: 1)",
-    )
-    parser.add_argument(
-        "--debug-wilcox",
-        type=int,
+        "config",
         nargs="?",
-        const=10,
         default=None,
-        metavar="N",
-        help="Print top N features by Wilcoxon p-value (with BH q) after mean filter; default N=10 if flag is given.",
+        help="YAML run file (default: metadata/kopredict_default.yaml).",
     )
-    parser.add_argument(
-        "--min-essential-cell-lines",
-        type=int,
-        default=1,
-        metavar="N",
-        help=(
-            "Minimum number of overlapping cell lines with raw dependency <= essentiality threshold "
-            "required to run permutations and the biomarker pipeline (default: 1). Use 0 to disable."
-        ),
-    )
-    parser.add_argument(
-        "--essentiality-threshold",
-        type=float,
-        default=None,
-        metavar="T",
-        help=(
-            "Raw crispr/rnai score threshold for calling a line essential (<= T counts). "
-            "Default: -1 for crispr, -0.5 for rnai."
-        ),
-    )
-    parser.add_argument(
-        "--max-next-feature-subsets",
-        type=int,
-        default=3,
-        metavar="K",
-        help=(
-            "After the initial biomarker groups (determine_best_biomrker_sets), each "
-            "add_next_best_features_to_tree step keeps at most K feature subsets that pass "
-            "Wilcoxon/q filters, ranked by best (smallest) Wilcoxon p within each subset. "
-            "Use 0 for no limit (may be slow)."
-        ),
-    )
-    parser.add_argument(
-        "--keep-lowexp-highexp",
-        action="store_true",
-        default=False,
-        help="Keep features whose row names contain 'lowexp' or 'highexp' (default: drop them).",
-    )
-    parser.add_argument(
-        "--keep-depmapprot-sangerprot",
-        action="store_true",
-        default=False,
-        help="Keep protein features (depmapprot, sangerprot, rppa). Default: drop them.",
-    )
-
-    args = parser.parse_args()
+    parsed = parser.parse_args(argv)
+    config_path = Path(parsed.config).expanduser() if parsed.config else None
+    args = load_run_config(config_path)
 
     if args.data_dir:
         os.environ["KOPREDICT_DATA_DIR"] = str(Path(args.data_dir).expanduser().resolve())
@@ -461,8 +416,6 @@ def main():
     print("Loading features...")
     final_features_df = pd.read_parquet(args.features_path)
     final_features_df = final_features_df[~final_features_df.index.str.contains("absolute")]
-    final_features_df = final_features_df[~final_features_df.index.str.contains("sensitive")]
-    final_features_df = final_features_df[~final_features_df.index.str.contains("resistant")]
     if not args.keep_depmapprot_sangerprot:
         final_features_df = final_features_df[~final_features_df.index.str.contains("depmapprot")]
         final_features_df = final_features_df[~final_features_df.index.str.contains("sangerprot")]
@@ -480,6 +433,8 @@ def main():
             if req not in raw.columns:
                 print(f"ERROR: Cohort CSV must contain column {req!r}. Found: {list(raw.columns)}", file=sys.stderr)
                 sys.exit(2)
+        raw = raw[["oncotree_column", "name"]]
+        validate_cohort_table(raw)
 
         batch_root = os.path.join(output_root, cur_target, cur_dataset)
         os.makedirs(batch_root, exist_ok=True)
@@ -489,28 +444,17 @@ def main():
         for idx, row in raw.iterrows():
             col = row["oncotree_column"]
             name = row["name"]
-            if name == "":
+            names = parse_cohort_name_list(name)
+            if not names:
                 continue
-            cancer_type_label = f"{col}={name}" if col != "" else name
+            cancer_type_label = f"{col}={' + '.join(names)}" if col != "" else " + ".join(names)
             print(f"\n--- Cohort row {idx}: {cancer_type_label} ---")
             try:
-                cell_raw = celllines_for_single_cohort_row(col, name)
+                cell_raw = celllines_for_cohort_names(col, names)
             except ValueError as e:
                 print(f"ERROR: {e}", file=sys.stderr)
-                summary_all.extend(
-                    build_cohort_summary_rows(
-                        feature_tree=None,
-                        fdf=final_features_df,
-                        tdf_filtered=target_df,
-                        target=cur_target,
-                        dataset=cur_dataset,
-                        cancertype=name,
-                        oncotree_column=col,
-                        logic_type=logic_type,
-                        ko_datatype=cur_dataset,
-                    )
-                )
-                continue
+                print("ERROR: Cohort CSV was not run.", file=sys.stderr)
+                sys.exit(2)
 
             feature_tree, target_df_pipeline, srows = _run_single_cohort_analysis(
                 cur_target=cur_target,
@@ -604,10 +548,10 @@ def main():
         print("Done.")
         return
 
-    # Non-batch: one cohort from -c / --cancer-types and --oncotree-column
+    # Non-batch: one cohort from cancer_types and oncotree_column.
     cur_cts = parse_cancer_type_values(args.cancer_types)
     if not cur_cts:
-        print("ERROR: -c / --cancer-types must contain at least one value.", file=sys.stderr)
+        print("ERROR: cancer_types in the YAML file must contain at least one value.", file=sys.stderr)
         sys.exit(2)
     cell_raw = return_celllines_matching_oncotree_filter(args.oncotree_column, cur_cts)
 

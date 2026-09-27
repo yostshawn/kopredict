@@ -7,6 +7,7 @@ RUN apt-get update \
 WORKDIR /opt/kopredict
 COPY pyproject.toml README.md requirements.txt ./
 COPY src ./src
+COPY metadata ./metadata
 RUN pip install --no-cache-dir .
 
 ENV KOPREDICT_DATA_DIR=/data

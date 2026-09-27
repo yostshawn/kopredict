@@ -113,11 +113,61 @@ def celllines_for_single_cohort_row(oncotree_column: str, name: str) -> list[str
     return out
 
 
+def parse_cohort_name_list(name: str) -> list[str]:
+    """One cohort name, or several names separated by semicolons.
+
+    A semicolon-separated list is combined the same way as ``cancer_types``:
+    a cell line is kept when it matches any name. Semicolons are used so a
+    value that itself contains a comma, such as ``AML, NOS``, stays one name.
+    """
+    text = "" if name is None else str(name)
+    if text.strip() == "":
+        return []
+    if ";" not in text:
+        return [text]
+    return [part.strip() for part in text.split(";") if part.strip() != ""]
+
+
+def celllines_for_cohort_names(oncotree_column: str, names: list[str]) -> list[str]:
+    """Cell lines matching any name in ``names`` for one OncoTree column."""
+    if not names:
+        raise ValueError("name must be non-empty.")
+    found: set[str] = set()
+    for name in names:
+        found.update(celllines_for_single_cohort_row(oncotree_column, name))
+    return list(found)
+
+
+def validate_cohort_table(raw: pd.DataFrame) -> None:
+    """Require every oncotree_column and name pair to match before any cohort runs.
+
+    A semicolon-separated ``name`` is checked one value at a time. The process
+    stops with every unknown pair listed when any value is missing.
+    """
+    problems: list[str] = []
+    for idx, row in raw.iterrows():
+        names = parse_cohort_name_list(row["name"])
+        if not names:
+            continue
+        column = row["oncotree_column"]
+        for name in names:
+            try:
+                celllines_for_single_cohort_row(column, name)
+            except ValueError as exc:
+                problems.append(f"Row {int(idx) + 2}: {exc}")
+    if problems:
+        raise SystemExit(
+            "ERROR: Cohort CSV has oncotree_column + name combinations that do not exist. "
+            "The search was not run.\n" + "\n".join(problems)
+        )
+
+
 def load_cohort_definition_from_csv(path: str | Path) -> tuple[list[str], list[str]]:
     """Read cohort CSV; return (cellline ids, unique ``name`` labels in first-seen order).
 
-    CSV must include columns ``oncotree_column`` and ``name``. Strings are used **exactly**
-    as given for both column names (must match a model table column) and filter values.
+    CSV must include columns ``oncotree_column`` and ``name``. Any other columns are ignored.
+    ``name`` may be one value or several values separated by semicolons. A list is
+    combined the same way as ``cancer_types``: a cell line is kept when it matches any name.
     """
     path = Path(path)
     if not path.is_file():
@@ -126,27 +176,24 @@ def load_cohort_definition_from_csv(path: str | Path) -> tuple[list[str], list[s
     for req in ("oncotree_column", "name"):
         if req not in raw.columns:
             sys.exit(f"ERROR: Cohort CSV must contain column {req!r}. Found: {list(raw.columns)}")
-    df_models = local_data.load_cellline_models()
+    raw = raw[["oncotree_column", "name"]]
+    validate_cohort_table(raw)
     celllines: set[str] = set()
     labels: list[str] = []
     for idx, row in raw.iterrows():
         col = row["oncotree_column"]
         name = row["name"]
-        if col == "" or name == "":
+        names = parse_cohort_name_list(name)
+        if not names:
             continue
-        if col not in df_models.columns:
-            sys.exit(
-                f"ERROR: Row {idx}: oncotree_column {col!r} not in model table. "
-                f"Columns include: {sorted(df_models.columns)[:40]} ..."
-            )
-        special = _special_cohort_celllines(df_models, name)
-        if special is not None:
-            celllines.update(str(x) for x in special)
-        else:
-            mask = df_models[col] == name
-            celllines.update(df_models.loc[mask, "cellline"].astype(str).tolist())
-        if name not in labels:
-            labels.append(name)
+        try:
+            matched = celllines_for_cohort_names(col, names)
+        except ValueError as exc:
+            sys.exit(f"ERROR: Row {idx}: {exc}")
+        celllines.update(matched)
+        label = ";".join(names)
+        if label not in labels:
+            labels.append(label)
     if not celllines:
         sys.exit("ERROR: No cell lines matched any row in the cohort CSV.")
     return list(celllines), labels
