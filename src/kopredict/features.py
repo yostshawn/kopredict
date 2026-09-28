@@ -104,7 +104,12 @@ def get_target_df(gene, dataset):
             "ERROR: kopredict only supports dataset 'crispr' or 'rnai'. "
             "Drug mode is disabled."
         )
-    target_df = pull_target_gene_dependency_scores(gene, ds)
+    try:
+        target_df = pull_target_gene_dependency_scores(gene, ds)
+    except ValueError as exc:
+        sys.exit(f"ERROR: {exc}")
+    if target_df.empty:
+        sys.exit(f"ERROR: Gene {gene!r} has no {ds} scores.")
     return target_df
 
 

@@ -215,7 +215,10 @@ def run_prediction_for_biomarker_given_target_dataset(
     if not list_of_list_features:
         return None, target_df
 
+    excluded = []
     for cur_features in list_of_list_features:
+        # Sibling k cannot see itself or any earlier sibling on this row.
+        excluded.extend(cur_features)
         cur_feature_string = ";".join(cur_features)
         cur_feature_node = FeatureNode(cur_feature_string)
         root_features.add_child(cur_feature_node)
@@ -250,7 +253,7 @@ def run_prediction_for_biomarker_given_target_dataset(
         print(str(len(cur_cl)))
         print(str(min_wilcox_pval))
         add_next_best_features_to_tree(
-            fdf=filtered_features_df.drop(cur_features, errors="ignore"),
+            fdf=filtered_features_df.drop(excluded, errors="ignore"),
             tdf=target_df,
             cl_list=cur_cl,
             cur_node=cur_feature_node,
@@ -328,7 +331,10 @@ def add_next_best_features_to_tree(
         cur_list_of_lists, filtered_feature_set, max_next_feature_subsets
     )
 
+    excluded = []
     for cur_features in cur_list_of_lists:
+        # Sibling k cannot see itself, earlier siblings, or features already excluded by the parent.
+        excluded.extend(cur_features)
         cur_feature_string = ";".join(cur_features)
         print("Parent - " + parent_feature)
         print("Child - " + cur_feature_string)
@@ -358,7 +364,7 @@ def add_next_best_features_to_tree(
         print(str(len(cur_cl_list)))
         print(str(min_wilcox_pval))
         add_next_best_features_to_tree(
-            fdf=cur_fdf,
+            fdf=cur_fdf.drop(excluded, errors="ignore"),
             tdf=cur_tdf,
             cl_list=cur_cl_list,
             cur_node=cur_feature_node,

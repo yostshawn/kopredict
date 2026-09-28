@@ -12,6 +12,7 @@ small ``lru_cache`` pools so repeated gene lookups in one process don't re-read 
 
 from __future__ import annotations
 
+import difflib
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -135,22 +136,39 @@ def load_omics_full(
     return df.copy()
 
 
+def _dependency_gene_names(df: pd.DataFrame) -> list[str]:
+    for column in ("gene", "genesymbol", "hugo_symbol", "symbol"):
+        if column in df.columns:
+            return df[column].dropna().astype(str).unique().tolist()
+    return [str(column) for column in df.columns if str(column).lower() != "cellline"]
+
+
+def _unknown_gene_error(gene: str, available: list[str], dataset: str) -> ValueError:
+    by_lower = {name.lower(): name for name in available}
+    close = [
+        by_lower[key]
+        for key in difflib.get_close_matches(str(gene).lower(), list(by_lower), n=5, cutoff=0.6)
+    ]
+    message = f"Gene {gene!r} is not in the {dataset} dependency matrix."
+    if close:
+        message += " Close matches: " + ", ".join(close) + "."
+    return ValueError(message)
+
+
 def _wide_dependency_to_long(
     dfn: pd.DataFrame,
     gene: str,
     value_col: str,
     celllines: Optional[Iterable[str]] = None,
+    dataset: str = "dependency",
 ) -> pd.DataFrame:
     """Wide matrix: ``cellline`` column + one column per gene → ``cellline``, ``value_col``."""
     if gene not in dfn.columns:
-        lower_to_orig = {str(c).lower(): c for c in dfn.columns}
+        lower_to_orig = {str(c).lower(): c for c in dfn.columns if str(c).lower() != "cellline"}
         if str(gene).lower() in lower_to_orig:
             gene = lower_to_orig[str(gene).lower()]
         else:
-            raise KeyError(
-                f"Gene {gene!r} not found as a column in dependency matrix. "
-                f"Sample columns: {list(dfn.columns)[:20]} ..."
-            )
+            raise _unknown_gene_error(gene, list(lower_to_orig.values()), dataset)
 
     wide = dfn[["cellline", gene]].copy()
     wide = wide.rename(columns={gene: value_col})
@@ -166,6 +184,7 @@ def _long_dependency_table(
     gene: str,
     value_col: str,
     celllines: Optional[Iterable[str]] = None,
+    dataset: str = "dependency",
 ) -> pd.DataFrame:
     """Long-format: ``cellline`` + gene column + score column ``crispr`` or ``rnai`` only."""
     df = _ensure_cellline(df, context="Dependency scores (long format)")
@@ -184,7 +203,9 @@ def _long_dependency_table(
             "Long-format dependency file needs a gene column "
             "(gene, genesymbol, hugo_symbol, or symbol)."
         )
-    sub = df[df[gcol].astype(str) == str(gene)].copy()
+    sub = df[df[gcol].astype(str).str.lower() == str(gene).lower()].copy()
+    if sub.empty:
+        raise _unknown_gene_error(gene, df[gcol].dropna().astype(str).unique().tolist(), dataset)
     sub = sub[["cellline", value_col]].copy()
     if celllines is not None:
         cset = set(str(x) for x in celllines)
@@ -211,9 +232,9 @@ def load_gene_dependency_scores(
     df = _read_dependency_cached(str(path))
     gene_cols = ("gene", "genesymbol", "hugo_symbol", "symbol")
     if any(c in df.columns for c in gene_cols):
-        out = _long_dependency_table(df, gene, value_col, celllines=celllines)
+        out = _long_dependency_table(df, gene, value_col, celllines=celllines, dataset=dataset)
     else:
-        out = _wide_dependency_to_long(df, gene, value_col, celllines=celllines)
+        out = _wide_dependency_to_long(df, gene, value_col, celllines=celllines, dataset=dataset)
 
     out = out.dropna(subset=[value_col])
     return out

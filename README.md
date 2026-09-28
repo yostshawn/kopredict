@@ -86,6 +86,8 @@ Expression and protein z-scores are computed across every model in that assay. A
 | Knockout | Derived from homozygous deletion and likely loss of function | Y | A missing call is treated as absent. | `{gene}_ko` is 1 when the gene is homozygously deleted or likely loss of function, else 0. |
 | Altered | Derived from damaging mutation, hotspot mutation, amplification, homozygous deletion, fusion, and knockout | Y | A missing call is treated as absent. | `{gene}_altered` is 1 when any of those calls is 1, else 0. |
 
+Features that pass the Wilcoxon cutoff are grouped by a hypergeometric overlap test. The tree expands siblings best first. At every row, the search under a sibling cannot see that sibling or any earlier sibling on the row, and features excluded by a parent stay excluded for the rest of that branch.
+
 ## Run a search
 
 ```bash
