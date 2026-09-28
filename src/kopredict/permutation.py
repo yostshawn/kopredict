@@ -48,6 +48,66 @@ def run_permutation_null_pvalues(
     return pvals, qvals
 
 
+def permutation_cutoffs_from_frames(
+    tdf=None,
+    fdf=None,
+    filter_score_column=None,
+    wilcox_score_column=None,
+    n_permutations=50,
+    percentile=5,
+    n_jobs=1,
+):
+    """Estimate p-value and q-value cutoffs by shuffling labels on one feature matrix.
+
+    ``fdf`` must already be restricted to the cell lines under test, with constant
+    rows removed and identical rows merged. ``tdf`` must contain those cell lines,
+    the raw score column, and the z-score column used by the mean filter.
+    """
+    min_pvals_per_perm = []
+    min_qvals_per_perm = []
+    all_pvals_per_perm = []
+    all_qvals_per_perm = []
+
+    def _run_one_perm(i):
+        pvals, qvals = run_permutation_null_pvalues(
+            tdf=tdf,
+            fdf=fdf,
+            filter_score_column=filter_score_column,
+            wilcox_score_column=wilcox_score_column,
+            random_state=i,
+        )
+        min_p = min(pvals) if pvals else 1.0
+        min_q = min(qvals) if qvals else 1.0
+        return pvals, qvals, min_p, min_q
+
+    _n_jobs = n_jobs if n_jobs is not None else 1
+    if _n_jobs <= 1:
+        results = [_run_one_perm(i) for i in range(n_permutations)]
+    else:
+        try:
+            _n_workers = min(_n_jobs, os.cpu_count() or 4, n_permutations)
+            with ThreadPoolExecutor(max_workers=_n_workers) as ex:
+                results = list(ex.map(_run_one_perm, range(n_permutations)))
+        except Exception as e:
+            warnings.warn(f"Parallelization failed ({e}), falling back to sequential execution.")
+            results = [_run_one_perm(i) for i in range(n_permutations)]
+
+    for pvals, qvals, min_p, min_q in results:
+        all_pvals_per_perm.append(pvals)
+        all_qvals_per_perm.append(qvals)
+        min_pvals_per_perm.append(min_p)
+        min_qvals_per_perm.append(min_q)
+
+    return {
+        "pvalue_cutoff": np.percentile(min_pvals_per_perm, percentile),
+        "qvalue_cutoff": np.percentile(min_qvals_per_perm, percentile),
+        "min_pvals_per_permutation": min_pvals_per_perm,
+        "min_qvals_per_permutation": min_qvals_per_perm,
+        "all_pvals": all_pvals_per_perm,
+        "all_qvals": all_qvals_per_perm,
+    }
+
+
 def estimate_significant_pvalue_cutoff(
     target=None,
     dataset=None,
@@ -69,11 +129,6 @@ def estimate_significant_pvalue_cutoff(
     loading dependency data again. Must contain ``cellline`` and the raw score column
     (``crispr`` or ``rnai``) for ``dataset``. Rows are filtered and z-scored internally.
     """
-    min_pvals_per_perm = []
-    min_qvals_per_perm = []
-    all_pvals_per_perm = []
-    all_qvals_per_perm = []
-
     if str(dataset).lower() == "drug":
         raise NotImplementedError("Dataset 'drug' is disabled in the local-only build.")
     if target_df is None:
@@ -115,43 +170,12 @@ def estimate_significant_pvalue_cutoff(
     cur_filter_score_column = str(dataset).lower() + "_zscore"
     cur_wilcox_score_column = str(dataset).lower()
 
-    def _run_one_perm(i):
-        pvals, qvals = run_permutation_null_pvalues(
-            tdf=target_df,
-            fdf=filtered_features_df,
-            filter_score_column=cur_filter_score_column,
-            wilcox_score_column=cur_wilcox_score_column,
-            random_state=i,
-        )
-        min_p = min(pvals) if pvals else 1.0
-        min_q = min(qvals) if qvals else 1.0
-        return pvals, qvals, min_p, min_q
-
-    _n_jobs = n_jobs if n_jobs is not None else 1
-    if _n_jobs <= 1:
-        results = [_run_one_perm(i) for i in range(n_permutations)]
-    else:
-        try:
-            _n_workers = min(_n_jobs, os.cpu_count() or 4, n_permutations)
-            with ThreadPoolExecutor(max_workers=_n_workers) as ex:
-                results = list(ex.map(_run_one_perm, range(n_permutations)))
-        except Exception as e:
-            warnings.warn(f"Parallelization failed ({e}), falling back to sequential execution.")
-            results = [_run_one_perm(i) for i in range(n_permutations)]
-
-    for pvals, qvals, min_p, min_q in results:
-        all_pvals_per_perm.append(pvals)
-        all_qvals_per_perm.append(qvals)
-        min_pvals_per_perm.append(min_p)
-        min_qvals_per_perm.append(min_q)
-
-    pvalue_cutoff = np.percentile(min_pvals_per_perm, percentile)
-    qvalue_cutoff = np.percentile(min_qvals_per_perm, percentile)
-    return {
-        "pvalue_cutoff": pvalue_cutoff,
-        "qvalue_cutoff": qvalue_cutoff,
-        "min_pvals_per_permutation": min_pvals_per_perm,
-        "min_qvals_per_permutation": min_qvals_per_perm,
-        "all_pvals": all_pvals_per_perm,
-        "all_qvals": all_qvals_per_perm,
-    }
+    return permutation_cutoffs_from_frames(
+        tdf=target_df,
+        fdf=filtered_features_df,
+        filter_score_column=cur_filter_score_column,
+        wilcox_score_column=cur_wilcox_score_column,
+        n_permutations=n_permutations,
+        percentile=percentile,
+        n_jobs=n_jobs,
+    )

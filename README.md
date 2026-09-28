@@ -72,7 +72,7 @@ Expression and protein z-scores are computed across every model in that assay. A
 | Copy number | `OmicsCNGeneWGS.csv`, otherwise `OmicsCNGeneMC_WES.csv` | Y | If a model has any WGS value, its WES values are not used. Genes are the union of the two files. | `{gene}_amp` is 1 when the copy-number ratio is at least 2. `{gene}_homdel` is 1 when the ratio is below 0.1. Otherwise 0 when the ratio is present, and missing when it is not. |
 | Damaging mutation | `OmicsSomaticMutationsMatrixDamaging.csv` | Y | Counts are aligned to cancer models. | `{gene}_mutdamaging` is 1 when the count is greater than 0, else 0. Missing when the cell is missing. |
 | Hotspot mutation | `OmicsSomaticMutationsMatrixHotspot.csv` | Y | Counts are aligned to cancer models. | `{gene}_muthotspot` is 1 when the count is greater than 0, else 0. Missing when the cell is missing. |
-| Likely loss of function | `OmicsSomaticMutations.csv` | Y | If a `LikelyLoF` column is present, rows flagged true are kept. Otherwise the variant class must be Nonsense_Mutation, Frame_Shift_Del, Frame_Shift_Ins, Splice_Site, or Nonstop_Mutation. | `{gene}_likelylof` is 1 when such a variant is recorded. The file does not store an explicit 0, so models without that call are missing, and the final matrix drops the row when it never contains a 0. The call is still used for knockout and altered. |
+| Likely loss of function | `OmicsSomaticMutations.csv` | Y | If a `LikelyLoF` column is present, a true flag is a loss-of-function call. Otherwise the variant class must be Nonsense_Mutation, Frame_Shift_Del, Frame_Shift_Ins, Splice_Site, or Nonstop_Mutation. A gene and model with any true call is 1. A gene and model present in the file with only false calls is 0. | `{gene}_likelylof` is 1 or 0 for gene–model pairs in the mutation file. Pairs that are not in the file stay missing. |
 | Gene fusion | `OmicsFusionFiltered.csv` | Y | Left and right genes are mapped to symbols. A model that appears in the fusion file and lacks a given pair is set to 0. | `FUSION_{left}_{right}` is 1 when that pair is reported. |
 | Expression | `OmicsExpressionTPMLogp1HumanProteinCodingGenes.csv` | Y | Per-gene z-score of log TPM. | `{gene}_highexp` is 1 when z is greater than 1.64. `{gene}_lowexp` is 1 when z is less than -1.64. Otherwise 0 when expression is present, and missing when it is not. |
 | Sanger proteomics | `harmonized_Sanger_MS_2022.csv` | N | Per-protein z-score. The feature id stays the UniProt accession. | `{accession}_highsangerprot` is 1 when z is greater than 1.64. `{accession}_lowsangerprot` is 1 when z is less than -1.64. Otherwise 0 when measured, and missing when not. |
@@ -86,7 +86,7 @@ Expression and protein z-scores are computed across every model in that assay. A
 | Knockout | Derived from homozygous deletion and likely loss of function | Y | A missing call is treated as absent. | `{gene}_ko` is 1 when the gene is homozygously deleted or likely loss of function, else 0. |
 | Altered | Derived from damaging mutation, hotspot mutation, amplification, homozygous deletion, fusion, and knockout | Y | A missing call is treated as absent. | `{gene}_altered` is 1 when any of those calls is 1, else 0. |
 
-Features that pass the Wilcoxon cutoff are grouped by a hypergeometric overlap test. The tree expands siblings best first. At every row, the search under a sibling cannot see that sibling or any earlier sibling on the row, and features excluded by a parent stay excluded for the rest of that branch.
+Features that pass the Wilcoxon cutoff are grouped by a hypergeometric overlap test. The first cutoff comes from the label shuffles in `n_permutations`. Each later cell-line subset repeats that same number of shuffles after features that are constant in the selected lines are removed and identical rows are merged. The tree expands siblings best first. At every row, the search under a sibling cannot see that sibling or any earlier sibling on the row, and features excluded by a parent stay excluded for the rest of that branch.
 
 ## Run a search
 
@@ -117,7 +117,7 @@ oncotreecode,LUCA;GCLC;LCLC;LUMEC,23
 
 `kopredict --help`, `kopredict-download --help`, and `kopredict-prepare --help` print a short how-to and the settings or flags each command accepts.
 
-By default the search drops feature names containing `absolute`, `lowexp`, `highexp`, `depmapprot`, `sangerprot`, or `rppa`. Set `keep_lowexp_highexp` or `keep_depmapprot_sangerprot` to true in the YAML file to keep those families (`rppa` follows the protein flag).
+By default the search drops feature names containing `absolute`, `lowexp`, `highexp`, `depmapprot`, `sangerprot`, or `rppa`. Set `keep_expression_features` or `keep_proteiomic_features` to true in the YAML file to keep those families (`rppa` follows the protein flag).
 
 Plots and the prediction summary are written under `data/output/{target}/{dataset}/` unless `output_dir` is set in the YAML file. That folder sits inside `data/`, which git ignores.
 

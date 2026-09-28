@@ -177,8 +177,8 @@ def load_run_config(path: Path | None) -> SimpleNamespace:
         min_essential_cell_lines=int(loaded.get("min_essential_cell_lines", 1)),
         essentiality_threshold=None if _blank(loaded.get("essentiality_threshold")) else float(loaded.get("essentiality_threshold")),
         max_next_feature_subsets=int(loaded.get("max_next_feature_subsets", 3)),
-        keep_lowexp_highexp=bool(loaded.get("keep_lowexp_highexp", False)),
-        keep_depmapprot_sangerprot=bool(loaded.get("keep_depmapprot_sangerprot", False)),
+        keep_expression_features=bool(loaded.get("keep_expression_features", False)),
+        keep_proteiomic_features=bool(loaded.get("keep_proteiomic_features", False)),
     )
 
 
@@ -314,6 +314,8 @@ def _run_single_cohort_analysis(
         debug_wilcox_top_n=debug_wilcox,
         max_next_feature_subsets=max_next_feature_subsets,
         target_df=target_df,
+        n_permutations=n_permutations,
+        n_jobs=n_jobs,
     )
 
     logic_type = "OR" if cur_or_flag else "AND"
@@ -416,11 +418,11 @@ def main(argv: list[str] | None = None):
     print("Loading features...")
     final_features_df = pd.read_parquet(args.features_path)
     final_features_df = final_features_df[~final_features_df.index.str.contains("absolute")]
-    if not args.keep_depmapprot_sangerprot:
+    if not args.keep_proteiomic_features:
         final_features_df = final_features_df[~final_features_df.index.str.contains("depmapprot")]
         final_features_df = final_features_df[~final_features_df.index.str.contains("sangerprot")]
         final_features_df = final_features_df[~final_features_df.index.str.contains("rppa")]
-    if not args.keep_lowexp_highexp:
+    if not args.keep_expression_features:
         final_features_df = final_features_df[~final_features_df.index.str.contains("lowexp")]
         final_features_df = final_features_df[~final_features_df.index.str.contains("highexp")]
 

@@ -507,22 +507,22 @@ def lof_mask(mutations: pd.DataFrame, model_ids: set[str], gene_lookup: dict[str
     lof_flag = _find_column(mutations.columns, ("likelylof",))
     if not gene_col or not model_col or (not class_col and not lof_flag):
         raise ValueError("OmicsSomaticMutations.csv needs gene, model, and a loss-of-function column.")
+    use = mutations[[model_col, gene_col]].copy()
     if lof_flag:
         flag = mutations[lof_flag].astype(str).str.lower().isin(["true", "1", "yes"])
-        hit = mutations.loc[flag, [model_col, gene_col]].dropna()
     else:
-        hit = mutations[mutations[class_col].astype(str).isin(LOF_CLASSES)][[model_col, gene_col]].dropna()
+        flag = mutations[class_col].astype(str).isin(LOF_CLASSES)
+    use["value"] = flag.astype(int)
     if gene_lookup:
-        hit["gene"] = hit[gene_col].map(lambda value: resolve_gene_label(value, gene_lookup))
+        use["gene"] = use[gene_col].map(lambda value: resolve_gene_label(value, gene_lookup))
     else:
-        hit["gene"] = hit[gene_col].map(_symbol)
-    hit["cellline"] = hit[model_col].astype(str)
-    hit = hit[hit["cellline"].isin(model_ids)]
-    if hit.empty:
+        use["gene"] = use[gene_col].map(_symbol)
+    use["cellline"] = use[model_col].astype(str)
+    use = use[use["cellline"].isin(model_ids) & use["gene"].notna()]
+    if use.empty:
         return pd.DataFrame()
-    hit = hit[hit["gene"].notna()]
-    paired = hit.drop_duplicates().assign(value=1)
-    return paired.pivot_table(index="gene", columns="cellline", values="value", aggfunc="max")
+    # A gene seen only with LikelyLoF false is 0. A true call for that gene and model stays 1.
+    return use.pivot_table(index="gene", columns="cellline", values="value", aggfunc="max")
 
 
 def fusion_tables(

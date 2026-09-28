@@ -9,23 +9,24 @@ import warnings
 
 import pandas as pd
 
-from .features import (
-    FeatureNode,
-    cleanup_featureset,
-    get_target_df,
-    add_zscore_to_df,
-    debug_print_top_wilcoxon_features,
-    return_possible_features,
-    generaate_overlap_matrix,
-    run_hypergeom_tests,
-    group_features_by_pvalue_v2,
-    get_p_and_q_cutoffs,
-)
+from .background import Background
 from .database import (
     load_cohort_definition_from_csv,
     return_celllines_matching_oncotree_filter,
 )
-from .background import Background
+from .features import (
+    FeatureNode,
+    add_zscore_to_df,
+    cleanup_featureset,
+    debug_print_top_wilcoxon_features,
+    generaate_overlap_matrix,
+    get_target_df,
+    group_features_by_pvalue_v2,
+    restrict_features_to_celllines,
+    return_possible_features,
+    run_hypergeom_tests,
+)
+from .permutation import permutation_cutoffs_from_frames
 
 
 def _limit_next_tree_subsets(cur_list_of_lists, filtered_feature_set: pd.DataFrame, max_subsets: int):
@@ -170,6 +171,9 @@ def run_prediction_for_biomarker_given_target_dataset(
     debug_wilcox_top_n=None,
     max_next_feature_subsets=3,
     target_df=None,
+    n_permutations=50,
+    n_jobs=1,
+    percentile=5,
 ):
     """Run full biomarker prediction pipeline for target/dataset.
 
@@ -243,60 +247,82 @@ def run_prediction_for_biomarker_given_target_dataset(
                 )
             )
 
-        cutoffs = get_p_and_q_cutoffs(len(cur_cl))
-        if isinstance(cutoffs, str):
-            min_wilcox_pval, min_wilcox_qval = 0.001, 0.01
-        else:
-            min_wilcox_pval, min_wilcox_qval = cutoffs
-
-        print(str(len(target_df["cellline"].values.tolist())))
-        print(str(len(cur_cl)))
-        print(str(min_wilcox_pval))
         add_next_best_features_to_tree(
-            fdf=filtered_features_df.drop(excluded, errors="ignore"),
+            source_fdf=fdf,
+            excluded_features=list(excluded),
             tdf=target_df,
             cl_list=cur_cl,
             cur_node=cur_feature_node,
             filter_score_column=cur_filter_score_column,
             wilcox_score_column=cur_wilcox_score_column,
             min_feature_count=min_feature_count,
-            min_wilcox_pval=min_wilcox_pval,
-            min_wilcox_qval=min_wilcox_qval,
             min_geom_pval=min_geom_pval,
             parent_feature=cur_feature_string,
             or_flag=or_flag,
             max_next_feature_subsets=max_next_feature_subsets,
+            n_permutations=n_permutations,
+            n_jobs=n_jobs,
+            percentile=percentile,
         )
     return root_features, target_df
 
 
+def _feature_labels(names) -> list[str]:
+    """Feature names plus pieces joined by ``;`` when identical rows were merged."""
+    labels = []
+    for name in names:
+        text = str(name)
+        labels.append(text)
+        labels.extend(part for part in text.split(";") if part)
+    return labels
+
+
 def add_next_best_features_to_tree(
-    fdf=None,
+    source_fdf=None,
+    excluded_features=None,
     tdf=None,
     cl_list=None,
     cur_node=None,
     filter_score_column=None,
     wilcox_score_column=None,
     min_feature_count=3,
-    min_wilcox_pval=0.001,
-    min_wilcox_qval=0.01,
     min_geom_pval=0.0000000001,
     parent_feature=None,
     or_flag=True,
     max_next_feature_subsets=3,
+    n_permutations=50,
+    n_jobs=1,
+    percentile=5,
 ):
     """Recursively add best feature groups as children to cur_node."""
-    cur_fdf = fdf[cl_list].copy()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        cur_fdf = cleanup_featureset(cur_fdf, mindiff=min_feature_count)
-    cur_tdf = tdf[tdf["cellline"].isin(cl_list)].copy()
+    blocked = _feature_labels(excluded_features or [])
+    available = source_fdf.drop(blocked, errors="ignore")
+    cur_fdf = restrict_features_to_celllines(available, cl_list)
+    cur_tdf = tdf[tdf["cellline"].isin(cur_fdf.columns)].copy()
     if cur_fdf.empty:
         return
     if cur_tdf.empty:
         return
     if cur_fdf.shape[1] < min_feature_count:
         return
+
+    print(
+        f"Subset shuffles on {cur_fdf.shape[1]} cell lines and {cur_fdf.shape[0]} features "
+        f"({n_permutations} permutations)..."
+    )
+    cutoffs = permutation_cutoffs_from_frames(
+        tdf=cur_tdf,
+        fdf=cur_fdf,
+        filter_score_column=filter_score_column,
+        wilcox_score_column=wilcox_score_column,
+        n_permutations=n_permutations,
+        percentile=percentile,
+        n_jobs=n_jobs,
+    )
+    min_wilcox_pval = cutoffs["pvalue_cutoff"]
+    min_wilcox_qval = cutoffs["qvalue_cutoff"]
+    print(f"P-value cutoff: {min_wilcox_pval}")
+    print(f"Q-value cutoff: {min_wilcox_qval}")
 
     filtered_feature_set = return_possible_features(
         cur_fdf,
@@ -331,7 +357,7 @@ def add_next_best_features_to_tree(
         cur_list_of_lists, filtered_feature_set, max_next_feature_subsets
     )
 
-    excluded = []
+    excluded = list(excluded_features or [])
     for cur_features in cur_list_of_lists:
         # Sibling k cannot see itself, earlier siblings, or features already excluded by the parent.
         excluded.extend(cur_features)
@@ -353,28 +379,20 @@ def add_next_best_features_to_tree(
                 )
             )
 
-        cutoffs = get_p_and_q_cutoffs(len(cur_cl_list))
-        if isinstance(cutoffs, str):
-            min_wilcox_pval, min_wilcox_qval = 0.001, 0.01
-        else:
-            min_wilcox_pval, min_wilcox_qval = cutoffs
-
-        print("Num Cell Lines")
-        print(str(len(cur_tdf["cellline"].values.tolist())))
-        print(str(len(cur_cl_list)))
-        print(str(min_wilcox_pval))
         add_next_best_features_to_tree(
-            fdf=cur_fdf.drop(excluded, errors="ignore"),
+            source_fdf=source_fdf,
+            excluded_features=list(excluded),
             tdf=cur_tdf,
             cl_list=cur_cl_list,
             cur_node=cur_feature_node,
             filter_score_column=filter_score_column,
             wilcox_score_column=wilcox_score_column,
             min_feature_count=min_feature_count,
-            min_wilcox_pval=min_wilcox_pval,
-            min_wilcox_qval=min_wilcox_qval,
             min_geom_pval=min_geom_pval,
             parent_feature=cur_feature_string,
             or_flag=or_flag,
             max_next_feature_subsets=max_next_feature_subsets,
+            n_permutations=n_permutations,
+            n_jobs=n_jobs,
+            percentile=percentile,
         )

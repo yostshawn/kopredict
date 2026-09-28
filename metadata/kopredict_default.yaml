@@ -37,7 +37,9 @@ features_path: null
 # Plots and summaries. null uses <data_dir>/output.
 output_dir: null
 
-# Shuffles used to set the p-value cutoff.
+# Shuffles used to set the p-value and q-value cutoffs.
+# The full cohort uses this count. Each later cell-line subset uses it again,
+# after features that do not vary in that subset are removed.
 n_permutations: 50
 
 # Parallel shuffle workers. 1 runs them one at a time.
@@ -60,7 +62,7 @@ essentiality_threshold: null
 max_next_feature_subsets: 3
 
 # Include expression high/low features. They are dropped when false.
-keep_lowexp_highexp: false
+keep_expression_features: false
 
 # Include Sanger, Gygi, and RPPA features. They are dropped when false.
-keep_depmapprot_sangerprot: false
+keep_proteiomic_features: false

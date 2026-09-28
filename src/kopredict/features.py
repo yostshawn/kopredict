@@ -66,6 +66,70 @@ def cleanup_featureset(fdf, mindiff=3):
     return pd.concat([unique_features_df, merged])
 
 
+def _hash_feature_rows(encoded: np.ndarray) -> np.ndarray:
+    data = np.ascontiguousarray(encoded)
+    pad = (-data.shape[1]) % 8
+    if pad:
+        data = np.pad(data, ((0, 0), (0, pad)), mode="constant")
+    folded = data.view(np.uint64)
+    hashes = np.zeros(data.shape[0], dtype=np.uint64)
+    for column in range(folded.shape[1]):
+        hashes ^= folded[:, column] * np.uint64(0x9E3779B97F4A7C15 + column)
+    return hashes
+
+
+def _merge_exact_feature_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Combine rows that are identical on 0, 1, and missing cells."""
+    if len(frame) < 2:
+        return frame
+    values = frame.to_numpy(dtype=np.float32, copy=False)
+    encoded = np.zeros(values.shape, dtype=np.uint8)
+    encoded[np.equal(values, 1)] = 1
+    encoded[np.isnan(values)] = 255
+    hashes = _hash_feature_rows(encoded)
+    groups: dict[int, list[int]] = {}
+    name_groups: dict[int, list[str]] = {}
+    representatives: list[int] = []
+    names = frame.index.astype(str).tolist()
+    for position, key in enumerate(hashes.tolist()):
+        row = encoded[position]
+        match = None
+        for representative in groups.get(int(key), ()):
+            if np.array_equal(row, encoded[representative]):
+                match = representative
+                break
+        if match is None:
+            groups.setdefault(int(key), []).append(position)
+            name_groups[position] = [names[position]]
+            representatives.append(position)
+        else:
+            name_groups[match].append(names[position])
+    chosen = frame.iloc[representatives].copy()
+    chosen.index = [";".join(dict.fromkeys(name_groups[rep])) for rep in representatives]
+    chosen.index.name = None
+    return chosen
+
+
+def restrict_features_to_celllines(fdf: pd.DataFrame, celllines) -> pd.DataFrame:
+    """Subset columns, drop constant rows, and merge identical feature rows.
+
+    A row is constant when the selected cell lines contain no 0, no 1, or only
+    missing values. Missing cells are not filled in as 0 before that check or
+    before identical rows are combined.
+    """
+    columns = fdf.columns.intersection(pd.Index(list(celllines)))
+    subset = fdf.loc[:, columns]
+    if subset.empty:
+        return subset
+    values = subset.to_numpy(dtype=np.float32, copy=False)
+    has_one = np.nansum(values == 1, axis=1) > 0
+    has_zero = np.nansum(values == 0, axis=1) > 0
+    subset = subset.loc[has_one & has_zero]
+    if subset.empty:
+        return subset
+    return _merge_exact_feature_rows(subset)
+
+
 def cellline_interesect(tdf, fdf, input_list=None):
     """Intersect cell lines between target and feature dataframes."""
     target_cl = pd.Index(tdf["cellline"].unique())
@@ -152,6 +216,64 @@ def wilcoxon_test(group, tdf, score_column):
     return np.nan
 
 
+def _sig_figs_array(values, precision=3):
+    """Round finite nonzero values to ``precision`` significant figures."""
+    out = np.asarray(values, dtype=float).copy()
+    valid = np.isfinite(out) & (out != 0)
+    magnitude = np.abs(out[valid])
+    scale = 10.0 ** (np.floor(np.log10(magnitude)) - (precision - 1))
+    out[valid] = np.round(out[valid] / scale) * scale
+    return out
+
+
+def ranksums_less_pvalues(features: pd.DataFrame, scores: pd.Series) -> pd.Series:
+    """One-sided Wilcoxon rank-sum p-values for every feature row.
+
+    Matches ``scipy.stats.ranksums(..., alternative='less')`` on the cell lines
+    where the feature is 0 or 1. Ranks are computed once for each shared
+    missingness pattern, then applied to every row with that pattern.
+    """
+    if features.empty:
+        return pd.Series(dtype=float, index=features.index)
+    columns = features.columns.astype(str)
+    score_values = scores.reindex(columns).to_numpy(dtype=float)
+    usable = np.isfinite(score_values)
+    matrix = features.to_numpy(dtype=np.float32, copy=False)
+    if matrix.shape[1] != len(usable):
+        matrix = features.reindex(columns=columns).to_numpy(dtype=np.float32, copy=False)
+    matrix = matrix[:, usable]
+    score_values = score_values[usable]
+    pvalues = np.full(matrix.shape[0], np.nan, dtype=float)
+    if matrix.size == 0 or matrix.shape[1] == 0:
+        return pd.Series(pvalues, index=features.index)
+
+    observed = np.isfinite(matrix)
+    packed = np.packbits(observed, axis=1)
+    row_keys = np.ascontiguousarray(packed).view(np.dtype((np.void, packed.shape[1]))).ravel()
+    _, group_ids = np.unique(row_keys, return_inverse=True)
+    is_one = matrix == 1
+    is_zero = matrix == 0
+    for group in range(int(group_ids.max()) + 1):
+        rows = np.flatnonzero(group_ids == group)
+        present = observed[rows[0]]
+        if not present.any():
+            continue
+        ranks = stats.rankdata(score_values[present])
+        ones = is_one[rows][:, present]
+        zeros = is_zero[rows][:, present]
+        n1 = ones.sum(axis=1)
+        n0 = zeros.sum(axis=1)
+        rank_sum = ones @ ranks
+        total = n1 + n0
+        expected = n1 * (total + 1) / 2.0
+        variance = n1 * n0 * (total + 1) / 12.0
+        ok = (n1 > 0) & (n0 > 0) & (variance > 0)
+        z = np.full(len(rows), np.nan, dtype=float)
+        z[ok] = (rank_sum[ok] - expected[ok]) / np.sqrt(variance[ok])
+        pvalues[rows[ok]] = stats.norm.cdf(z[ok])
+    return pd.Series(_sig_figs_array(pvalues, 3), index=features.index)
+
+
 def debug_wilcoxon_feature_ranking(
     fdf,
     tdf,
@@ -173,12 +295,9 @@ def debug_wilcoxon_feature_ranking(
     )
     if not filtered_feature_list:
         return pd.DataFrame(columns=["feature", "p_value", "q_value"])
-    wilcox_pvals = (
-        fdf.loc[filtered_feature_list]
-        .apply(wilcoxon_test, axis=1, args=(tdf, wilcox_score_column))
-        .reset_index()
-    )
-    wilcox_pvals.columns = ["feature", "p_value"]
+    scores = tdf.drop_duplicates("cellline").set_index("cellline")[wilcox_score_column]
+    wilcox_pvals = ranksums_less_pvalues(fdf.loc[filtered_feature_list], scores)
+    wilcox_pvals = wilcox_pvals.rename_axis("feature").reset_index(name="p_value")
     if wilcox_pvals.empty:
         return wilcox_pvals.assign(q_value=pd.Series(dtype=float))
     _, q_values, _, _ = multipletests(wilcox_pvals["p_value"], method="fdr_bh")
@@ -247,12 +366,9 @@ def return_possible_features(
     )
     if not filtered_feature_list:
         return pd.DataFrame(columns=["feature", "p_value", "q_value"])
-    wilcox_pvals = (
-        fdf.loc[filtered_feature_list]
-        .apply(wilcoxon_test, axis=1, args=(tdf, wilcox_score_column))
-        .reset_index()
-    )
-    wilcox_pvals.columns = ["feature", "p_value"]
+    scores = tdf.drop_duplicates("cellline").set_index("cellline")[wilcox_score_column]
+    wilcox_pvals = ranksums_less_pvalues(fdf.loc[filtered_feature_list], scores)
+    wilcox_pvals = wilcox_pvals.rename_axis("feature").reset_index(name="p_value")
 
     if not wilcox_pvals.empty:
         reject, q_values, _, _ = multipletests(wilcox_pvals["p_value"], method="fdr_bh")
