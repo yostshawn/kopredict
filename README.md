@@ -86,7 +86,11 @@ Expression and protein z-scores are computed across every model in that assay. A
 | Knockout | Derived from homozygous deletion and likely loss of function | Y | A missing call is treated as absent. | `{gene}_ko` is 1 when the gene is homozygously deleted or likely loss of function, else 0. |
 | Altered | Derived from damaging mutation, hotspot mutation, amplification, homozygous deletion, fusion, and knockout | Y | A missing call is treated as absent. | `{gene}_altered` is 1 when any of those calls is 1, else 0. |
 
-Features that pass the Wilcoxon cutoff are grouped by a hypergeometric overlap test. Each feature is tested in both directions. When the `1`s are more essential, the hit keeps its name. When the `0`s are more essential, every piece of the name, split on `;` and `:`, is marked `_inverse`, and later steps use those swapped rows. `sens_res` stays `sensitive`. A feature is tested only when the sensitive group's mean raw score is at least `min_effect_size` below the other group (default -0.2). The shuffle cutoff uses `null_percentile` (default 5). The first cutoff comes from the label shuffles in `n_permutations`, and those shuffles include both directions. Each later cell-line subset repeats that same number of shuffles after features that are constant in the selected lines are removed and identical rows are merged. The tree expands siblings best first. At every row, the search under a sibling cannot see that sibling or any earlier sibling on the row, and features excluded by a parent stay excluded for the rest of that branch. A chosen feature also excludes its other direction.
+Each feature is tested in two directions against the raw CRISPR or RNAi score. The forward test asks whether cell lines with a `1` are more essential than cell lines with a `0`. The inverse test asks the opposite question. A hit is kept only when the mean score of the sensitive group is at least `min_effect_size` below the mean of the other group. The default is `-0.2`. Missing cells are left out of both means. A forward hit keeps its name. An inverse hit marks every piece of the name, split on `;` and `:`, with `_inverse`, and later steps use the swapped row. `sens_res` in the summary is `sensitive` for both directions.
+
+Features that pass are grouped by a hypergeometric overlap test. Grouping does not change a feature's direction: a knockout that overlaps a wild-type hit stays a knockout. The p-value and q-value cutoffs come from `n_permutations` label shuffles (default 50). Each shuffle records its best p-value and best q-value, and the cutoff is the `null_percentile` of those best values (default 5, the 5th percentile). A smaller percentile is stricter. Both directions and the effect-size filter are included in every shuffle. Each later cell-line subset repeats that same number of shuffles after features that are constant in the selected lines are removed and identical rows are merged.
+
+The tree expands siblings best first. At every row, the search under a sibling cannot see that sibling or any earlier sibling on the row, and features excluded by a parent stay excluded for the rest of that branch. A chosen feature also excludes its other direction.
 
 ## Run a search
 
@@ -96,7 +100,9 @@ kopredict path/to/run.yaml
 kopredict --help
 ```
 
-Search settings live in [`metadata/kopredict_default.yaml`](metadata/kopredict_default.yaml). That file stays short: it is the example for target `IPPK`, dataset `crispr`, and cohort `SOLID`. Copy it, edit `target`, `dataset`, and `cancer_types`, and pass the copy as the argument above. A copied file can omit keys; missing keys are filled from the default file.
+Search settings live in [`metadata/kopredict_default.yaml`](metadata/kopredict_default.yaml). That file is the example run: target `PPM1D`, dataset `crispr`, and cohort `SOLID`. Copy it, edit `target`, `dataset`, and `cancer_types`, and pass the copy as the argument above. A copied file can omit keys; missing keys are filled from the default file.
+
+`min_effect_size` is the mean raw-score gap required before a feature is tested (default `-0.2`). `null_percentile` is the shuffle percentile used as the p-value and q-value cutoff (default `5`). `n_permutations` is how many shuffles are run for the full cohort and again for each later cell-line subset (default `50`).
 
 Which cohort strings are valid is listed in [`metadata/oncotree.yaml`](metadata/oncotree.yaml). That file is from DepMap Public 26Q1 `Model.csv`. The `oncotree_column` list names the four columns the run file accepts: `oncotreelineage`, `oncotreeprimarydisease`, `oncotreesubtype`, and `oncotreecode`. Under each column, every value is paired with the number of cell lines that have that exact string.
 
