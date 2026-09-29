@@ -35,8 +35,8 @@ def get_data_dir() -> Path:
     cwd_data = Path.cwd() / "data"
     if cwd_data.is_dir():
         return cwd_data.resolve()
-    # Editable install: src/kopredict/local_data.py -> repository root is parents[2]
-    return Path(__file__).resolve().parents[2] / "data"
+    # Editable install: src/local_data.py -> repository root is parents[1]
+    return Path(__file__).resolve().parents[1] / "data"
 
 
 def _data_path(name: str) -> Path:

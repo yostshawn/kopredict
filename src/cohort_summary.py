@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .features import wilcoxon_test
+from features import rows_for_block, rows_for_features, wilcoxon_test
 
 
 def _flag_group_message(group: str | None) -> str | None:
@@ -30,7 +30,7 @@ def _cohort_fdf_tdf(fdf, tdf, ko_datatype: str):
     cohort_cols = sorted(
         set(tdf["cellline"].astype(str).unique()).intersection(fdf.columns.astype(str))
     )
-    fdf_plot = fdf.reindex(columns=cohort_cols).fillna(0)
+    fdf_plot = fdf.reindex(columns=cohort_cols)
     tdf_plot = tdf[tdf["cellline"].astype(str).isin(cohort_cols)].copy()
     score_col = str(ko_datatype).lower()
     return fdf_plot, tdf_plot, score_col, len(cohort_cols)
@@ -43,10 +43,7 @@ def _cumulative_mask(fdf_plot, feature_blocks: list, logic_type: str, up_to_k: i
     else:
         m = pd.Series(False, index=fdf_plot.columns)
     for i in range(up_to_k + 1):
-        feats = [x.strip() for x in feature_blocks[i].split(";") if x.strip()]
-        if not feats:
-            continue
-        bm = fdf_plot.loc[feats].any(axis=0)
+        bm = rows_for_block(fdf_plot, feature_blocks[i]).fillna(0).any(axis=0)
         if logic_u == "AND":
             m = m & bm
         else:
@@ -55,16 +52,24 @@ def _cumulative_mask(fdf_plot, feature_blocks: list, logic_type: str, up_to_k: i
 
 
 def _best_feature_wilcox_p_in_block(fdf_plot, tdf_plot, score_col: str, block_string: str):
-    feats = [x.strip() for x in block_string.split(";") if x.strip()]
+    parts = [part.strip() for part in str(block_string).split(";") if part.strip()]
+    if len(parts) <= 1:
+        candidates = parts or [str(block_string)]
+    else:
+        candidates = parts
     best_f, best_p = None, np.nan
-    for f in feats:
-        if f not in fdf_plot.index:
+    for feature in candidates:
+        try:
+            row = rows_for_features(fdf_plot, [feature])
+        except KeyError:
             continue
-        p = wilcoxon_test(fdf_plot.loc[f], tdf_plot, score_col)
+        if row.empty:
+            continue
+        p = wilcoxon_test(row.iloc[0], tdf_plot, score_col)
         if p is None or (isinstance(p, float) and np.isnan(p)):
             continue
         if best_f is None or p < best_p:
-            best_f, best_p = f, p
+            best_f, best_p = feature, p
     return best_f, best_p
 
 
@@ -121,6 +126,26 @@ def _mutant_wt_essentiality_stats(
     }
 
 
+SUMMARY_COLUMNS = [
+    "Target",
+    "Dataset",
+    "sens_res",
+    "cancertype",
+    "oncotree_column",
+    "Logic_type",
+    "Group",
+    "Biomarker_set",
+    "Group_tree",
+    "Number_mutant",
+    "Number_WT",
+    "Mutant_mean_essentiality",
+    "Mutant_median_essentiality",
+    "WT_mean_essentiality",
+    "WT_median_essentiality",
+    "Wilcoxon_pval",
+]
+
+
 def build_cohort_summary_rows(
     *,
     feature_tree,
@@ -133,11 +158,13 @@ def build_cohort_summary_rows(
     logic_type: str,
     ko_datatype: str,
     no_tree_group: str | None = None,
+    sens_res: str = "sensitive",
 ) -> list[dict]:
     """Rows for batch prediction summary CSV (one row per step along each tree path).
 
-    ``cancertype`` is the cancer label (e.g. cohort CSV ``name`` or ``-c`` values).
+    ``cancertype`` is the cancer label (e.g. cohort CSV ``name`` or cancer_types values).
     ``oncotree_column`` is the model column used (e.g. ``oncotreecode``), or empty if N/A.
+    ``sens_res`` is ``sensitive`` for the current search. A resistance search should pass ``resistant``.
 
     When ``feature_tree`` is None, ``no_tree_group`` overrides the default
     ``Group`` text (default: ``No Significant Features``).
@@ -150,6 +177,7 @@ def build_cohort_summary_rows(
     base = {
         "Target": target,
         "Dataset": dataset,
+        "sens_res": sens_res,
         "cancertype": cancertype,
         "oncotree_column": oncotree_column,
         "Logic_type": logic_u,

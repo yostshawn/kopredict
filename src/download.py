@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from kopredict.local_data import get_data_dir
-from kopredict.sources import (
+from local_data import get_data_dir
+from sources import (
     ADDITIONAL_DATASETS_CSV,
     DEPMAP_DOWNLOADS_CSV,
     DEPMAP_FILES_CSV,
@@ -359,7 +359,7 @@ def main(argv: list[str] | None = None) -> None:
         import os
 
         os.environ["KOPREDICT_DATA_DIR"] = str(Path(args.data_dir).expanduser().resolve())
-        from kopredict import local_data
+        import local_data
 
         local_data.clear_load_caches()
     data_dir = get_data_dir()

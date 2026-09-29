@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import local_data
+import local_data
 
 _SPECIAL_PANCANCER = "PANCANCER"
 _SPECIAL_SOLID = "SOLID"

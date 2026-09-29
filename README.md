@@ -86,7 +86,7 @@ Expression and protein z-scores are computed across every model in that assay. A
 | Knockout | Derived from homozygous deletion and likely loss of function | Y | A missing call is treated as absent. | `{gene}_ko` is 1 when the gene is homozygously deleted or likely loss of function, else 0. |
 | Altered | Derived from damaging mutation, hotspot mutation, amplification, homozygous deletion, fusion, and knockout | Y | A missing call is treated as absent. | `{gene}_altered` is 1 when any of those calls is 1, else 0. |
 
-Features that pass the Wilcoxon cutoff are grouped by a hypergeometric overlap test. The first cutoff comes from the label shuffles in `n_permutations`. Each later cell-line subset repeats that same number of shuffles after features that are constant in the selected lines are removed and identical rows are merged. The tree expands siblings best first. At every row, the search under a sibling cannot see that sibling or any earlier sibling on the row, and features excluded by a parent stay excluded for the rest of that branch.
+Features that pass the Wilcoxon cutoff are grouped by a hypergeometric overlap test. Each feature is tested in both directions. When the `1`s are more essential, the hit keeps its name. When the `0`s are more essential, every piece of the name, split on `;` and `:`, is marked `_inverse`, and later steps use those swapped rows. `sens_res` stays `sensitive`. A feature is tested only when the sensitive group's mean raw score is at least `min_effect_size` below the other group (default -0.2). The shuffle cutoff uses `null_percentile` (default 5). The first cutoff comes from the label shuffles in `n_permutations`, and those shuffles include both directions. Each later cell-line subset repeats that same number of shuffles after features that are constant in the selected lines are removed and identical rows are merged. The tree expands siblings best first. At every row, the search under a sibling cannot see that sibling or any earlier sibling on the row, and features excluded by a parent stay excluded for the rest of that branch. A chosen feature also excludes its other direction.
 
 ## Run a search
 
@@ -119,7 +119,7 @@ oncotreecode,LUCA;GCLC;LCLC;LUMEC,23
 
 By default the search drops feature names containing `absolute`, `lowexp`, `highexp`, `depmapprot`, `sangerprot`, or `rppa`. Set `keep_expression_features` or `keep_proteiomic_features` to true in the YAML file to keep those families (`rppa` follows the protein flag).
 
-Plots and the prediction summary are written under `data/output/{target}/{dataset}/` unless `output_dir` is set in the YAML file. That folder sits inside `data/`, which git ignores.
+Plots and a summary CSV are written under `data/output/{target}/{dataset}/` unless `output_dir` is set in the YAML file. That folder sits inside `data/`, which git ignores. The summary uses the boxplot file name with `_summary.csv` in place of `_boxplots.pdf`. `sens_res` is `sensitive`. A resistance search should set it to `resistant`.
 
 ## Docker
 

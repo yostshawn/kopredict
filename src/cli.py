@@ -1,6 +1,6 @@
 """CLI entry point for the kopredict package."""
 
-from kopredict.cli_impl import main
+from cli_impl import main
 
 __all__ = ["main"]
 

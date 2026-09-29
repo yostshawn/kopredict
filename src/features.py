@@ -8,6 +8,7 @@ overlap and grouping (see ``pipeline.determine_best_biomrker_sets``).
 
 import sys
 import itertools
+import re
 import pandas as pd
 import numpy as np
 import networkx as nx
@@ -15,8 +16,8 @@ from scipy import stats
 from scipy.stats import hypergeom
 from statsmodels.stats.multitest import multipletests
 
-from .utils import sig_figs
-from .database import pull_target_gene_dependency_scores
+from utils import sig_figs
+from database import pull_target_gene_dependency_scores
 
 
 class FeatureNode:
@@ -139,12 +140,7 @@ def cellline_interesect(tdf, fdf, input_list=None):
 
 
 def filter_features_by_mean(score_column=None, fdf=None, tdf=None):
-    """Return feature index names that pass the mean *z-scored* dependency filter.
-
-    For each feature row, the weighted mean of per-cellline ``score_column`` (expected
-    ``*_zscore``) is computed; features with a negative mean are retained (enrichment
-    in essential lines). Returns a list of feature index strings.
-    """
+    """Feature names whose 1s have a large enough negative mean-score gap."""
     if fdf.empty:
         return []
     if tdf.empty:
@@ -152,12 +148,177 @@ def filter_features_by_mean(score_column=None, fdf=None, tdf=None):
     if score_column is None or score_column not in tdf.columns:
         sys.exit("ERROR: Provide score column and make sure it is in the target dataframe")
 
+    forward, _inverse = mean_filter_directions(score_column=score_column, fdf=fdf, tdf=tdf)
+    return forward
+
+
+INVERSE_SUFFIX = "_inverse"
+_FEATURE_SEPARATORS = {";", ":"}
+_FEATURE_ATOM_SPLIT = re.compile(r"([;:])")
+
+
+def inverse_feature_name(name: str) -> str:
+    """Add ``_inverse`` to every ``;`` or ``:`` piece that does not already have it."""
+    pieces = []
+    for piece in _FEATURE_ATOM_SPLIT.split(str(name)):
+        if piece in _FEATURE_SEPARATORS or piece == "":
+            pieces.append(piece)
+        elif piece.endswith(INVERSE_SUFFIX):
+            pieces.append(piece)
+        else:
+            pieces.append(piece + INVERSE_SUFFIX)
+    return "".join(pieces)
+
+
+def base_feature_name(name: str) -> str:
+    """Remove ``_inverse`` from every ``;`` or ``:`` piece."""
+    pieces = []
+    for piece in _FEATURE_ATOM_SPLIT.split(str(name)):
+        if piece in _FEATURE_SEPARATORS or piece == "":
+            pieces.append(piece)
+        elif piece.endswith(INVERSE_SUFFIX):
+            pieces.append(piece[: -len(INVERSE_SUFFIX)])
+        else:
+            pieces.append(piece)
+    return "".join(pieces)
+
+
+def feature_is_inverse(name: str) -> bool:
+    """True when any piece of a combined feature name is an inverse."""
+    return any(
+        piece.endswith(INVERSE_SUFFIX)
+        for piece in _FEATURE_ATOM_SPLIT.split(str(name))
+        if piece not in _FEATURE_SEPARATORS and piece != ""
+    )
+
+
+def expanded_feature_labels(names) -> list[str]:
+    """Names to drop so a chosen feature and its other direction stay excluded."""
+    labels = []
+    for name in names:
+        text = str(name)
+        labels.append(text)
+        labels.append(base_feature_name(text))
+        for piece in _FEATURE_ATOM_SPLIT.split(text):
+            if piece in _FEATURE_SEPARATORS or piece == "":
+                continue
+            labels.append(piece)
+            labels.append(base_feature_name(piece))
+    return labels
+
+
+def mean_filter_directions(score_column=None, fdf=None, tdf=None, min_effect_size=-0.2):
+    """Features whose sensitive group is at least ``min_effect_size`` below the other group.
+
+    The effect is the mean raw score of the 1s minus the mean of the 0s. An inverse
+    feature uses the opposite difference. Missing cells are left out of both means.
+    Returns ``(forward_names, inverse_names)``.
+    """
+    if fdf is None or fdf.empty:
+        return [], []
+    if tdf is None or tdf.empty:
+        sys.exit("ERROR: Need to provide target dataframe 'tdf = PANDAS'")
+    if score_column is None or score_column not in tdf.columns:
+        sys.exit("ERROR: Provide score column and make sure it is in the target dataframe")
+
     cellline_scores = tdf.groupby("cellline")[score_column].sum()
     common_celllines = fdf.columns.intersection(cellline_scores.index)
-    fdf_aligned = fdf[common_celllines].fillna(0)
-    scores_aligned = cellline_scores.reindex(common_celllines).fillna(0)
-    feature_sums = (fdf_aligned * scores_aligned).sum(axis=1)
-    return feature_sums[feature_sums < 0].index.tolist()
+    if len(common_celllines) == 0:
+        return [], []
+    values = fdf.loc[:, common_celllines].to_numpy(dtype=np.float32, copy=False)
+    scores = cellline_scores.reindex(common_celllines).to_numpy(dtype=np.float64)
+    finite_score = np.isfinite(scores)
+    values = values[:, finite_score]
+    scores = scores[finite_score]
+    n_ones = (values == 1).sum(axis=1)
+    n_zeros = (values == 0).sum(axis=1)
+    sum_ones = (values == 1) @ scores
+    sum_zeros = (values == 0) @ scores
+    mean_ones = np.full(len(n_ones), np.nan, dtype=np.float64)
+    mean_zeros = np.full(len(n_zeros), np.nan, dtype=np.float64)
+    np.divide(sum_ones, n_ones, out=mean_ones, where=n_ones > 0)
+    np.divide(sum_zeros, n_zeros, out=mean_zeros, where=n_zeros > 0)
+    forward_effect = mean_ones - mean_zeros
+    inverse_effect = mean_zeros - mean_ones
+    names = fdf.index.to_numpy()
+    forward = names[np.isfinite(forward_effect) & (forward_effect <= min_effect_size)].tolist()
+    inverse = names[np.isfinite(inverse_effect) & (inverse_effect <= min_effect_size)].tolist()
+    return forward, inverse
+
+
+def _swap_feature_row(row: pd.Series) -> pd.Series:
+    """Swap 0 and 1. Missing cells stay missing."""
+    swapped = row.copy()
+    swapped = swapped.mask(row == 0, 1)
+    swapped = swapped.mask(row == 1, 0)
+    return swapped
+
+
+def _lookup_feature_row(fdf: pd.DataFrame, text: str) -> pd.Series:
+    if text in fdf.index:
+        row = fdf.loc[text]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+        return row
+    base = base_feature_name(text)
+    if feature_is_inverse(text) and base in fdf.index:
+        row = fdf.loc[base]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+        return _swap_feature_row(row)
+    raise KeyError(text)
+
+
+def rows_for_features(fdf: pd.DataFrame, names) -> pd.DataFrame:
+    """Rows for ``names``. Inverse pieces swap 0 and 1 on the base feature."""
+    columns = fdf.columns
+    selected = []
+    index = []
+    for name in names:
+        text = str(name).strip()
+        if text == "":
+            continue
+        row = _lookup_feature_row(fdf, text)
+        selected.append(row.to_numpy())
+        index.append(text)
+    if not selected:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(np.vstack(selected), index=index, columns=columns)
+
+
+def rows_for_block(fdf: pd.DataFrame, block_string: str) -> pd.DataFrame:
+    """Resolve one tree block, including a merged name such as ``A_inverse;B_inverse``."""
+    text = str(block_string).strip()
+    try:
+        return rows_for_features(fdf, [text])
+    except KeyError:
+        parts = [part.strip() for part in text.split(";") if part.strip()]
+        if len(parts) <= 1:
+            raise
+        return rows_for_features(fdf, parts)
+
+
+def materialize_inverse_features(fdf: pd.DataFrame, feature_names) -> pd.DataFrame:
+    """Append swapped rows for inverse names that are not already in ``fdf``."""
+    extras = []
+    seen = set()
+    for name in feature_names:
+        text = str(name)
+        if not feature_is_inverse(text) or text in fdf.index or text in seen:
+            continue
+        base = base_feature_name(text)
+        if base not in fdf.index:
+            continue
+        seen.add(text)
+        row = fdf.loc[base]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+        extras.append(_swap_feature_row(row).rename(text))
+    if not extras:
+        return fdf
+    added = pd.DataFrame(extras)
+    added = added.reindex(columns=fdf.columns)
+    return pd.concat([fdf, added])
 
 
 def get_target_df(gene, dataset):
@@ -226,15 +387,14 @@ def _sig_figs_array(values, precision=3):
     return out
 
 
-def ranksums_less_pvalues(features: pd.DataFrame, scores: pd.Series) -> pd.Series:
-    """One-sided Wilcoxon rank-sum p-values for every feature row.
+def ranksums_less_pvalues(features: pd.DataFrame, scores: pd.Series) -> pd.DataFrame:
+    """Wilcoxon p-values for the 1s (``p_forward``) and the 0s (``p_inverse``).
 
-    Matches ``scipy.stats.ranksums(..., alternative='less')`` on the cell lines
-    where the feature is 0 or 1. Ranks are computed once for each shared
-    missingness pattern, then applied to every row with that pattern.
+    Both columns use ``alternative='less'`` on that group. Ranks are computed once
+    for each shared missingness pattern. ``p_inverse`` is the other tail of the same z.
     """
     if features.empty:
-        return pd.Series(dtype=float, index=features.index)
+        return _directional_frame(features.index, np.array([]), np.array([]))
     columns = features.columns.astype(str)
     score_values = scores.reindex(columns).to_numpy(dtype=float)
     usable = np.isfinite(score_values)
@@ -243,9 +403,10 @@ def ranksums_less_pvalues(features: pd.DataFrame, scores: pd.Series) -> pd.Serie
         matrix = features.reindex(columns=columns).to_numpy(dtype=np.float32, copy=False)
     matrix = matrix[:, usable]
     score_values = score_values[usable]
-    pvalues = np.full(matrix.shape[0], np.nan, dtype=float)
+    p_forward = np.full(matrix.shape[0], np.nan, dtype=float)
+    p_inverse = np.full(matrix.shape[0], np.nan, dtype=float)
     if matrix.size == 0 or matrix.shape[1] == 0:
-        return pd.Series(pvalues, index=features.index)
+        return _directional_frame(features.index, p_forward, p_inverse)
 
     observed = np.isfinite(matrix)
     packed = np.packbits(observed, axis=1)
@@ -270,8 +431,64 @@ def ranksums_less_pvalues(features: pd.DataFrame, scores: pd.Series) -> pd.Serie
         ok = (n1 > 0) & (n0 > 0) & (variance > 0)
         z = np.full(len(rows), np.nan, dtype=float)
         z[ok] = (rank_sum[ok] - expected[ok]) / np.sqrt(variance[ok])
-        pvalues[rows[ok]] = stats.norm.cdf(z[ok])
-    return pd.Series(_sig_figs_array(pvalues, 3), index=features.index)
+        p_forward[rows[ok]] = stats.norm.cdf(z[ok])
+        # The 0s are more essential when the 1s' z is positive.
+        p_inverse[rows[ok]] = stats.norm.sf(z[ok])
+    return _directional_frame(features.index, p_forward, p_inverse)
+
+
+def _directional_frame(index, p_forward, p_inverse) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "p_forward": _sig_figs_array(p_forward, 3),
+            "p_inverse": _sig_figs_array(p_inverse, 3),
+        },
+        index=index,
+    )
+
+
+def directional_wilcoxon_table(
+    fdf, tdf, filter_score_column, wilcox_score_column, min_effect_size=-0.2
+) -> pd.DataFrame:
+    """Wilcoxon rows for both group directions, with one BH correction across them.
+
+    A direction is tested only when the sensitive group's mean raw score is at least
+    ``min_effect_size`` below the other group. A forward hit keeps the feature name.
+    An inverse hit is ``{feature}_inverse``.
+    """
+    empty = pd.DataFrame(columns=["feature", "p_value", "q_value"])
+    if fdf is None or fdf.empty:
+        return empty
+    forward, inverse = mean_filter_directions(
+        score_column=wilcox_score_column,
+        fdf=fdf,
+        tdf=tdf,
+        min_effect_size=min_effect_size,
+    )
+    ordered = list(dict.fromkeys([*forward, *inverse]))
+    if not ordered:
+        return empty
+    scores = tdf.drop_duplicates("cellline").set_index("cellline")[wilcox_score_column]
+    both = ranksums_less_pvalues(fdf.loc[ordered], scores)
+    rows = []
+    forward_set = set(map(str, forward))
+    inverse_set = set(map(str, inverse))
+    for name in ordered:
+        key = str(name)
+        if key in forward_set:
+            p_value = both.at[name, "p_forward"]
+            if np.isfinite(p_value):
+                rows.append((key, float(p_value)))
+        if key in inverse_set:
+            p_value = both.at[name, "p_inverse"]
+            if np.isfinite(p_value):
+                rows.append((inverse_feature_name(key), float(p_value)))
+    table = pd.DataFrame(rows, columns=["feature", "p_value"])
+    if table.empty:
+        return empty
+    _reject, q_values, _, _ = multipletests(table["p_value"], method="fdr_bh")
+    table["q_value"] = q_values
+    return table
 
 
 def debug_wilcoxon_feature_ranking(
@@ -281,6 +498,7 @@ def debug_wilcoxon_feature_ranking(
     top_n=10,
     filter_score_column=None,
     wilcox_score_column=None,
+    min_effect_size=-0.2,
 ):
     """Wilcoxon + BH q-values for mean-filtered features (same as ``return_possible_features``), top ``top_n`` by p-value.
 
@@ -290,18 +508,11 @@ def debug_wilcoxon_feature_ranking(
         filter_score_column = score_column
     if wilcox_score_column is None:
         wilcox_score_column = score_column
-    filtered_feature_list = filter_features_by_mean(
-        score_column=filter_score_column, fdf=fdf, tdf=tdf
+    wilcox_pvals = directional_wilcoxon_table(
+        fdf, tdf, filter_score_column, wilcox_score_column, min_effect_size=min_effect_size
     )
-    if not filtered_feature_list:
-        return pd.DataFrame(columns=["feature", "p_value", "q_value"])
-    scores = tdf.drop_duplicates("cellline").set_index("cellline")[wilcox_score_column]
-    wilcox_pvals = ranksums_less_pvalues(fdf.loc[filtered_feature_list], scores)
-    wilcox_pvals = wilcox_pvals.rename_axis("feature").reset_index(name="p_value")
     if wilcox_pvals.empty:
-        return wilcox_pvals.assign(q_value=pd.Series(dtype=float))
-    _, q_values, _, _ = multipletests(wilcox_pvals["p_value"], method="fdr_bh")
-    wilcox_pvals["q_value"] = q_values
+        return pd.DataFrame(columns=["feature", "p_value", "q_value"])
     return wilcox_pvals.sort_values("p_value", ascending=True).head(int(top_n))
 
 
@@ -313,6 +524,7 @@ def debug_print_top_wilcoxon_features(
     file=None,
     filter_score_column=None,
     wilcox_score_column=None,
+    min_effect_size=-0.2,
 ):
     """Print top ``top_n`` mean-filtered features ranked by Wilcoxon ``p_value`` (with ``q_value``)."""
     file = file or sys.stdout
@@ -323,6 +535,7 @@ def debug_print_top_wilcoxon_features(
         top_n=top_n,
         filter_score_column=filter_score_column,
         wilcox_score_column=wilcox_score_column,
+        min_effect_size=min_effect_size,
     )
     show_filter_col = filter_score_column if filter_score_column is not None else score_column
     show_wilcox_col = wilcox_score_column if wilcox_score_column is not None else score_column
@@ -349,38 +562,35 @@ def return_possible_features(
     qval_cutoff=0.01,
     filter_score_column=None,
     wilcox_score_column=None,
+    min_effect_size=-0.2,
 ):
-    """Filter features by mean then run Wilcoxon/FDR.
+    """Filter features by mean then run Wilcoxon/FDR on both group directions.
 
-    ``filter_score_column`` controls ``filter_features_by_mean`` (typically ``*_zscore``).
-    ``wilcox_score_column`` controls Wilcoxon p-values (typically raw ``crispr``/``rnai``).
+    ``wilcox_score_column`` is the raw score used for the effect-size filter and the Wilcoxon test.
+    ``min_effect_size`` is the required mean difference (sensitive group minus the other group).
     ``score_column`` remains as a backward-compatible fallback when the two explicit
-    columns are not supplied.
+    columns are not supplied. Inverse hits are named ``{feature}_inverse``.
     """
     if filter_score_column is None:
         filter_score_column = score_column
     if wilcox_score_column is None:
         wilcox_score_column = score_column
-    filtered_feature_list = filter_features_by_mean(
-        score_column=filter_score_column, fdf=fdf, tdf=tdf
+    wilcox_pvals = directional_wilcoxon_table(
+        fdf,
+        tdf,
+        filter_score_column,
+        wilcox_score_column,
+        min_effect_size=min_effect_size,
     )
-    if not filtered_feature_list:
+    if wilcox_pvals.empty:
         return pd.DataFrame(columns=["feature", "p_value", "q_value"])
-    scores = tdf.drop_duplicates("cellline").set_index("cellline")[wilcox_score_column]
-    wilcox_pvals = ranksums_less_pvalues(fdf.loc[filtered_feature_list], scores)
-    wilcox_pvals = wilcox_pvals.rename_axis("feature").reset_index(name="p_value")
-
-    if not wilcox_pvals.empty:
-        reject, q_values, _, _ = multipletests(wilcox_pvals["p_value"], method="fdr_bh")
-        wilcox_pvals["q_value"] = q_values
-        if qval_cutoff < 1:
-            final_df = wilcox_pvals[
-                (wilcox_pvals["q_value"] < qval_cutoff) & (wilcox_pvals["p_value"] < wilcox_cutoff)
-            ]
-        else:
-            final_df = wilcox_pvals[wilcox_pvals["p_value"] < wilcox_cutoff]
-        return final_df.sort_values(by="p_value")
-    return pd.DataFrame(columns=["feature", "p_value", "q_value"])
+    if qval_cutoff < 1:
+        final_df = wilcox_pvals[
+            (wilcox_pvals["q_value"] < qval_cutoff) & (wilcox_pvals["p_value"] < wilcox_cutoff)
+        ]
+    else:
+        final_df = wilcox_pvals[wilcox_pvals["p_value"] < wilcox_cutoff]
+    return final_df.sort_values(by="p_value")
 
 
 def generaate_overlap_matrix(df, feature_set1, feature_set2):

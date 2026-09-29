@@ -24,20 +24,24 @@ from types import SimpleNamespace
 import pandas as pd
 import yaml
 
-from kopredict.cohort_summary import build_cohort_summary_rows, safe_cohort_folder_name
-from kopredict.database import (
+from cohort_summary import (
+    SUMMARY_COLUMNS,
+    build_cohort_summary_rows,
+    safe_cohort_folder_name,
+)
+from database import (
     celllines_for_cohort_names,
     parse_cohort_name_list,
     return_celllines_matching_oncotree_filter,
     validate_cohort_table,
 )
-from kopredict.features import get_target_df
-from kopredict.local_data import get_data_dir
-from kopredict.permutation import estimate_significant_pvalue_cutoff
-from kopredict.pipeline import run_prediction_for_biomarker_given_target_dataset
-from kopredict.plotting import create_boxplot, create_oncoplot
-from kopredict.prepare import FEATURES_FILENAME
-from kopredict.sources import metadata_dir
+from features import get_target_df
+from local_data import get_data_dir
+from permutation import estimate_significant_pvalue_cutoff
+from pipeline import run_prediction_for_biomarker_given_target_dataset
+from plotting import create_boxplot, create_oncoplot, summary_csv_path
+from prepare import FEATURES_FILENAME
+from sources import metadata_dir
 
 _CONFIG_NAME = "kopredict_default.yaml"
 _RUN_HELP = """\
@@ -157,7 +161,8 @@ def load_run_config(path: Path | None) -> SimpleNamespace:
         debug = 10 if debug else None
     elif debug is not None:
         debug = int(debug)
-    print(f"Config: {source}")
+    if not 0 <= float(loaded.get("null_percentile", 5)) <= 100:
+        raise SystemExit("null_percentile must be between 0 and 100.")
     return SimpleNamespace(
         target=str(loaded["target"]).strip(),
         dataset=dataset,
@@ -171,6 +176,8 @@ def load_run_config(path: Path | None) -> SimpleNamespace:
         output_dir=None if _blank(loaded.get("output_dir")) else str(loaded.get("output_dir")),
         n_permutations=int(loaded.get("n_permutations", 50)),
         n_jobs=int(loaded.get("n_jobs", 1)),
+        null_percentile=float(loaded.get("null_percentile", 5)),
+        min_effect_size=float(loaded.get("min_effect_size", -0.2)),
         vmin=float(loaded.get("vmin", -1)),
         vmax=float(loaded.get("vmax", 1)),
         debug_wilcox=debug,
@@ -193,6 +200,8 @@ def _run_single_cohort_analysis(
     group_options,
     n_permutations,
     n_jobs,
+    null_percentile,
+    min_effect_size,
     cur_or_flag,
     oncotree_column,
     cohort_csv_path,
@@ -289,6 +298,8 @@ def _run_single_cohort_analysis(
         background_options=group_options,
         n_permutations=n_permutations,
         n_jobs=n_jobs,
+        percentile=null_percentile,
+        min_effect_size=min_effect_size,
         oncotree_column=oncotree_column,
         cohort_csv_path=cohort_csv_path,
         cohort_celllines_override=cohort_celllines_override,
@@ -316,6 +327,8 @@ def _run_single_cohort_analysis(
         target_df=target_df,
         n_permutations=n_permutations,
         n_jobs=n_jobs,
+        percentile=null_percentile,
+        min_effect_size=min_effect_size,
     )
 
     logic_type = "OR" if cur_or_flag else "AND"
@@ -386,7 +399,7 @@ def main(argv: list[str] | None = None):
 
     if args.data_dir:
         os.environ["KOPREDICT_DATA_DIR"] = str(Path(args.data_dir).expanduser().resolve())
-        from kopredict import local_data as _local_data
+        import local_data as _local_data
 
         _local_data.clear_load_caches()
 
@@ -468,6 +481,8 @@ def main(argv: list[str] | None = None):
                 group_options=group_options,
                 n_permutations=args.n_permutations,
                 n_jobs=args.n_jobs,
+                null_percentile=args.null_percentile,
+                min_effect_size=args.min_effect_size,
                 cur_or_flag=cur_or_flag,
                 oncotree_column=args.oncotree_column,
                 cohort_csv_path=None,
@@ -522,24 +537,7 @@ def main(argv: list[str] | None = None):
             ct_token="cohort",
         )
         out_csv = os.path.join(batch_root, summary_csv_name)
-        cols = [
-            "Target",
-            "Dataset",
-            "cancertype",
-            "oncotree_column",
-            "Logic_type",
-            "Group",
-            "Biomarker_set",
-            "Group_tree",
-            "Number_mutant",
-            "Number_WT",
-            "Mutant_mean_essentiality",
-            "Mutant_median_essentiality",
-            "WT_mean_essentiality",
-            "WT_median_essentiality",
-            "Wilcoxon_pval",
-        ]
-        summary_df = pd.DataFrame(summary_all)[cols]
+        summary_df = pd.DataFrame(summary_all, columns=SUMMARY_COLUMNS)[SUMMARY_COLUMNS]
         before_n = len(summary_df)
         summary_df = summary_df.drop_duplicates(keep="first").reset_index(drop=True)
         after_n = len(summary_df)
@@ -559,7 +557,7 @@ def main(argv: list[str] | None = None):
 
     nested_out = os.path.join(output_root, cur_target, cur_dataset)
 
-    feature_tree, _, _ = _run_single_cohort_analysis(
+    feature_tree, _, summary_rows = _run_single_cohort_analysis(
         cur_target=cur_target,
         cur_dataset=cur_dataset,
         final_features_df=final_features_df,
@@ -569,13 +567,15 @@ def main(argv: list[str] | None = None):
         group_options=group_options,
         n_permutations=args.n_permutations,
         n_jobs=args.n_jobs,
+        null_percentile=args.null_percentile,
+        min_effect_size=args.min_effect_size,
         cur_or_flag=cur_or_flag,
         oncotree_column=args.oncotree_column,
         cohort_csv_path=None,
         cohort_celllines_override=cell_raw,
         debug_wilcox=args.debug_wilcox,
         output_root=nested_out,
-        write_summary_rows=False,
+        write_summary_rows=True,
         vmin=args.vmin,
         vmax=args.vmax,
         min_essential_cell_lines=min_essential_cell_lines,
@@ -584,6 +584,12 @@ def main(argv: list[str] | None = None):
         summary_cancertype=";".join(cur_cts),
         summary_oncotree_column=args.oncotree_column,
     )
+    logic_type = "OR" if cur_or_flag else "AND"
+    summary_path = summary_csv_path(cur_target, cur_dataset, logic_type, cur_cts, nested_out)
+    summary_df = pd.DataFrame(summary_rows, columns=SUMMARY_COLUMNS)
+    summary_df = summary_df.drop_duplicates(keep="first").reset_index(drop=True)
+    summary_df.to_csv(summary_path, index=False)
+    print(f"Wrote summary: {summary_path}")
 
     if feature_tree is None:
         sys.exit(0)

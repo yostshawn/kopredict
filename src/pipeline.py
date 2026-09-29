@@ -9,24 +9,26 @@ import warnings
 
 import pandas as pd
 
-from .background import Background
-from .database import (
+from background import Background
+from database import (
     load_cohort_definition_from_csv,
     return_celllines_matching_oncotree_filter,
 )
-from .features import (
+from features import (
     FeatureNode,
     add_zscore_to_df,
     cleanup_featureset,
     debug_print_top_wilcoxon_features,
+    expanded_feature_labels,
     generaate_overlap_matrix,
     get_target_df,
     group_features_by_pvalue_v2,
+    materialize_inverse_features,
     restrict_features_to_celllines,
     return_possible_features,
     run_hypergeom_tests,
 )
-from .permutation import permutation_cutoffs_from_frames
+from permutation import permutation_cutoffs_from_frames
 
 
 def _limit_next_tree_subsets(cur_list_of_lists, filtered_feature_set: pd.DataFrame, max_subsets: int):
@@ -60,6 +62,7 @@ def determine_best_biomrker_sets(
     wilcox_pval_cutoff=0.0001,
     wilcox_qval_cutoff=0.01,
     geom_pval_cutoff=0.0000000001,
+    min_effect_size=-0.2,
 ):
     """Run feature pipeline: Wilcoxon filter -> overlap matrix -> hypergeom -> group."""
     filtered_feature_set = return_possible_features(
@@ -69,10 +72,12 @@ def determine_best_biomrker_sets(
         wilcox_score_column=wilcox_score_column,
         wilcox_cutoff=wilcox_pval_cutoff,
         qval_cutoff=wilcox_qval_cutoff,
+        min_effect_size=min_effect_size,
     )
     if filtered_feature_set.empty:
         return []
 
+    fdf = materialize_inverse_features(fdf, filtered_feature_set["feature"].tolist())
     overlaps = generaate_overlap_matrix(
         fdf,
         filtered_feature_set["feature"].values.tolist(),
@@ -129,7 +134,7 @@ def prepare_prediction_inputs(
         background.create_background_df()
         background.fill_in_gene_list()
         background.cancer_types = cts
-        from .database import pull_cell_line_full_genomics
+        from database import pull_cell_line_full_genomics
 
         omics_df = pull_cell_line_full_genomics(genes=background.gene_list)
         background.update_celllines_given_options(omics_df)
@@ -174,6 +179,7 @@ def run_prediction_for_biomarker_given_target_dataset(
     n_permutations=50,
     n_jobs=1,
     percentile=5,
+    min_effect_size=-0.2,
 ):
     """Run full biomarker prediction pipeline for target/dataset.
 
@@ -202,6 +208,7 @@ def run_prediction_for_biomarker_given_target_dataset(
             filter_score_column=cur_filter_score_column,
             wilcox_score_column=cur_wilcox_score_column,
             top_n=int(debug_wilcox_top_n),
+            min_effect_size=min_effect_size,
         )
 
     list_of_list_features = determine_best_biomrker_sets(
@@ -212,12 +219,16 @@ def run_prediction_for_biomarker_given_target_dataset(
         wilcox_pval_cutoff=min_wilcox_pval,
         wilcox_qval_cutoff=min_wilcox_qval,
         geom_pval_cutoff=min_geom_pval,
+        min_effect_size=min_effect_size,
     )
 
     root_features = FeatureNode(target)
 
     if not list_of_list_features:
         return None, target_df
+
+    used_features = [feature for group in list_of_list_features for feature in group]
+    filtered_features_df = materialize_inverse_features(filtered_features_df, used_features)
 
     excluded = []
     for cur_features in list_of_list_features:
@@ -263,18 +274,14 @@ def run_prediction_for_biomarker_given_target_dataset(
             n_permutations=n_permutations,
             n_jobs=n_jobs,
             percentile=percentile,
+            min_effect_size=min_effect_size,
         )
     return root_features, target_df
 
 
 def _feature_labels(names) -> list[str]:
-    """Feature names plus pieces joined by ``;`` when identical rows were merged."""
-    labels = []
-    for name in names:
-        text = str(name)
-        labels.append(text)
-        labels.extend(part for part in text.split(";") if part)
-    return labels
+    """Feature names, their base rows, and pieces joined when rows were merged."""
+    return expanded_feature_labels(names)
 
 
 def add_next_best_features_to_tree(
@@ -293,6 +300,7 @@ def add_next_best_features_to_tree(
     n_permutations=50,
     n_jobs=1,
     percentile=5,
+    min_effect_size=-0.2,
 ):
     """Recursively add best feature groups as children to cur_node."""
     blocked = _feature_labels(excluded_features or [])
@@ -318,6 +326,7 @@ def add_next_best_features_to_tree(
         n_permutations=n_permutations,
         percentile=percentile,
         n_jobs=n_jobs,
+        min_effect_size=min_effect_size,
     )
     min_wilcox_pval = cutoffs["pvalue_cutoff"]
     min_wilcox_qval = cutoffs["qvalue_cutoff"]
@@ -331,10 +340,12 @@ def add_next_best_features_to_tree(
         wilcox_score_column=wilcox_score_column,
         wilcox_cutoff=min_wilcox_pval,
         qval_cutoff=min_wilcox_qval,
+        min_effect_size=min_effect_size,
     )
     if filtered_feature_set.empty:
         return
 
+    cur_fdf = materialize_inverse_features(cur_fdf, filtered_feature_set["feature"].tolist())
     overlaps = generaate_overlap_matrix(
         cur_fdf,
         filtered_feature_set["feature"].values.tolist(),
@@ -356,6 +367,8 @@ def add_next_best_features_to_tree(
     cur_list_of_lists = _limit_next_tree_subsets(
         cur_list_of_lists, filtered_feature_set, max_next_feature_subsets
     )
+    grouped_names = [feature for group in cur_list_of_lists for feature in group]
+    cur_fdf = materialize_inverse_features(cur_fdf, grouped_names)
 
     excluded = list(excluded_features or [])
     for cur_features in cur_list_of_lists:
@@ -395,4 +408,5 @@ def add_next_best_features_to_tree(
             n_permutations=n_permutations,
             n_jobs=n_jobs,
             percentile=percentile,
+            min_effect_size=min_effect_size,
         )

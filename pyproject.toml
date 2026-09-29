@@ -27,12 +27,33 @@ dependencies = [
 ]
 
 [project.scripts]
-kopredict = "kopredict.cli_impl:main"
-kopredict-download = "kopredict.download:main"
-kopredict-prepare = "kopredict.prepare:main"
+kopredict = "cli_impl:main"
+kopredict-download = "download:main"
+kopredict-prepare = "prepare:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "black", "ruff"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = [
+    "background",
+    "cli",
+    "cli_impl",
+    "cohort_summary",
+    "database",
+    "download",
+    "features",
+    "local_data",
+    "log",
+    "permutation",
+    "pipeline",
+    "plotting",
+    "prepare",
+    "sources",
+    "utils",
+]

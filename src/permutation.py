@@ -6,17 +6,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-from .features import (
+from features import (
     get_target_df,
     add_zscore_to_df,
     return_possible_features,
     cleanup_featureset,
 )
-from .database import (
+from database import (
     load_cohort_definition_from_csv,
     return_celllines_matching_oncotree_filter,
 )
-from .background import Background
+from background import Background
 
 
 def run_permutation_null_pvalues(
@@ -25,6 +25,7 @@ def run_permutation_null_pvalues(
     filter_score_column=None,
     wilcox_score_column=None,
     random_state=None,
+    min_effect_size=-0.2,
 ):
     """Run null permutation: shuffle cell line labels, return unfiltered p/q values."""
     tdf = tdf.copy()
@@ -38,6 +39,7 @@ def run_permutation_null_pvalues(
         wilcox_score_column=wilcox_score_column,
         wilcox_cutoff=1,
         qval_cutoff=1,
+        min_effect_size=min_effect_size,
     )
     pvals = pvals_df["p_value"].dropna().values.tolist()
     qvals = (
@@ -56,6 +58,7 @@ def permutation_cutoffs_from_frames(
     n_permutations=50,
     percentile=5,
     n_jobs=1,
+    min_effect_size=-0.2,
 ):
     """Estimate p-value and q-value cutoffs by shuffling labels on one feature matrix.
 
@@ -75,6 +78,7 @@ def permutation_cutoffs_from_frames(
             filter_score_column=filter_score_column,
             wilcox_score_column=wilcox_score_column,
             random_state=i,
+            min_effect_size=min_effect_size,
         )
         min_p = min(pvals) if pvals else 1.0
         min_q = min(qvals) if qvals else 1.0
@@ -122,6 +126,7 @@ def estimate_significant_pvalue_cutoff(
     cohort_csv_path=None,
     cohort_celllines_override=None,
     target_df=None,
+    min_effect_size=-0.2,
 ):
     """Estimate p-value and q-value cutoffs from permutation null distribution.
 
@@ -145,7 +150,7 @@ def estimate_significant_pvalue_cutoff(
     )
 
     if background_options is not None:
-        from .database import pull_cell_line_full_genomics
+        from database import pull_cell_line_full_genomics
 
         background = Background(background_options, celllines_of_interests)
         background.create_background_df()
@@ -178,4 +183,5 @@ def estimate_significant_pvalue_cutoff(
         n_permutations=n_permutations,
         percentile=percentile,
         n_jobs=n_jobs,
+        min_effect_size=min_effect_size,
     )

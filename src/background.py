@@ -4,7 +4,7 @@ import io
 import pandas as pd
 from scipy import stats
 
-from .utils import try_float_conversion
+from utils import try_float_conversion
 
 
 class Background:

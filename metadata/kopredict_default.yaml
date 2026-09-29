@@ -4,10 +4,10 @@
 # Options:  kopredict --help
 
 # Gene whose CRISPR or RNAi score is the outcome.
-target: PRMT5
+target: PPM1D
 
 # crispr or rnai
-dataset: rnai
+dataset: crispr
 
 # Cohort matched against oncotree_column. Use a string or a list.
 # Allowed values, and what SOLID and PANCANCER include, are in metadata/oncotree.yaml.
@@ -41,6 +41,15 @@ output_dir: null
 # The full cohort uses this count. Each later cell-line subset uses it again,
 # after features that do not vary in that subset are removed.
 n_permutations: 50
+
+# Percentile of the best null p-value and q-value from those shuffles.
+# 5 keeps the cutoff at the 5th percentile. A smaller number is stricter.
+null_percentile: 5
+
+# Mean raw-score gap required before a feature is tested.
+# Sensitive-group mean minus the other group's mean must be at or below this value.
+# The inverse direction uses the opposite difference. Missing cells are left out.
+min_effect_size: -0.2
 
 # Parallel shuffle workers. 1 runs them one at a time.
 n_jobs: 1

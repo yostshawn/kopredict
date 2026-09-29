@@ -13,10 +13,10 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
-from kopredict.download import DEFAULT_DEPMAP_RELEASE, verify_downloaded_files
-from kopredict.local_data import clear_load_caches, get_data_dir
-from kopredict.log import log_to_file, shape
-from kopredict.sources import additional_record
+from download import DEFAULT_DEPMAP_RELEASE, verify_downloaded_files
+from local_data import clear_load_caches, get_data_dir
+from log import log_to_file, shape
+from sources import additional_record
 
 FEATURES_FILENAME = "final_depmap_features_26Q1.parquet.gz"
 HRD_SCORE_CUTOFF = 42

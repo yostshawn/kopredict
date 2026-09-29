@@ -11,7 +11,8 @@ import scipy.stats as stats
 import pyoncoprint
 from matplotlib.backends.backend_pdf import PdfPages
 
-from .utils import sig_figs
+from features import rows_for_block
+from utils import sig_figs
 
 
 def _safe_filename(s):
@@ -34,9 +35,9 @@ def _plot_title_cancer_label(cancer_types):
 
 
 def _build_plot_path(
-    target_gene, ko_datatype, logic_type, cancer_types, suffix, output_root="."
+    target_gene, ko_datatype, logic_type, cancer_types, suffix, output_root=".", extension=".pdf"
 ):
-    """Build PDF path under ``output_root`` (caller supplies e.g. ``.../TARGET/DATASET/`` or a cohort folder)."""
+    """Build an output path under ``output_root`` (caller supplies e.g. ``.../TARGET/DATASET/``)."""
     plot_dir = output_root
     os.makedirs(plot_dir, exist_ok=True)
     cancer_types = cancer_types or []
@@ -44,9 +45,17 @@ def _build_plot_path(
     date_str = datetime.date.today().strftime("%Y-%m-%d")
     pdf_path = os.path.join(
         plot_dir,
-        f"{date_str}_{target_gene}_{ko_datatype}_{logic_type}_{cancer_str}_{suffix}.pdf",
+        f"{date_str}_{target_gene}_{ko_datatype}_{logic_type}_{cancer_str}_{suffix}{extension}",
     )
     return plot_dir, pdf_path
+
+
+def summary_csv_path(target_gene, ko_datatype, logic_type, cancer_types, output_root="."):
+    """Same name as the boxplot PDF, with ``_summary.csv`` in place of ``_boxplots.pdf``."""
+    _, pdf_path = _build_plot_path(
+        target_gene, ko_datatype, logic_type, cancer_types, "boxplots", output_root=output_root
+    )
+    return pdf_path[: -len("_boxplots.pdf")] + "_summary.csv"
 
 
 def create_boxplot(
@@ -72,7 +81,7 @@ def create_boxplot(
     cohort_cols = sorted(
         set(tdf["cellline"].astype(str).unique()).intersection(fdf.columns.astype(str))
     )
-    fdf_plot = fdf.reindex(columns=cohort_cols).fillna(0)
+    fdf_plot = fdf.reindex(columns=cohort_cols)
 
     sig_feature_list_of_list = tree.convert_to_list_of_lists()
 
@@ -88,8 +97,8 @@ def create_boxplot(
             else:
                 cumulative_mask = pd.Series(False, index=fdf_plot.columns)
 
-            first_block_feats = feature_blocks[0].split(";")
-            wt_mask = ~fdf_plot.loc[first_block_feats].any()
+            first_block_feats = feature_blocks[0]
+            wt_mask = ~rows_for_block(fdf_plot, first_block_feats).fillna(0).any()
             wt_series = tdf.loc[tdf["cellline"].isin(fdf_plot.columns[wt_mask]), ko_datatype]
             n_wt = int(len(wt_series))
             wt_group_label = f"WT (n={n_wt})"
@@ -98,14 +107,14 @@ def create_boxplot(
             logic_map[wt_group_label] = f"Baseline (WT), n={n_wt} cell lines"
 
             for step_idx, block_string in enumerate(feature_blocks):
-                features = [x.strip() for x in block_string.split(";") if x.strip()]
-                block_mask = fdf_plot.loc[features].any()
+                block_mask = rows_for_block(fdf_plot, block_string).fillna(0).any()
                 if logic_type.upper() == "AND":
                     cumulative_mask = cumulative_mask & block_mask
                 else:
                     cumulative_mask = cumulative_mask | block_mask
                 group_celllines = fdf_plot.columns[cumulative_mask]
                 group_series = tdf.loc[tdf["cellline"].isin(group_celllines), ko_datatype]
+                features = [part.strip() for part in str(block_string).split(";") if part.strip()]
                 short_label = f"Step {step_idx + 1}\n(n={len(group_series)})"
                 step_key = f"Step {step_idx + 1}"
                 logic_map[step_key] = " | ".join(features)
@@ -190,7 +199,7 @@ def create_oncoplot(
     plot_samples = sorted(
         set(tdf_clean["cellline"].astype(str).unique()).intersection(fdf.columns.astype(str))
     )
-    fdf_plot = fdf.reindex(columns=plot_samples).fillna(0)
+    fdf_plot = fdf.reindex(columns=plot_samples)
     tdf_plot = tdf_clean[tdf_clean["cellline"].astype(str).isin(plot_samples)].copy()
 
     ohd = tdf_plot[["cellline", ko_datatype]].rename(
@@ -220,20 +229,18 @@ def create_oncoplot(
 
     with PdfPages(pdf_path) as pdf:
         for path_idx, path in enumerate(tree.convert_to_list_of_lists()):
-            path_blocks = [b.split(";") for b in path[1:]]
-            path_blocks = [
-                [f.strip() for f in block if f.strip()] for block in path_blocks if block
-            ]
-            path_blocks = [b for b in path_blocks if b]
-            if not path_blocks:
+            if len(path) < 2:
                 continue
             path_label = " -> ".join(path[1:]).replace(";", " ")
             block_rows = []
             block_labels = []
             group_defs = []
-            for block in path_blocks:
+            for raw_block in path[1:]:
+                block = [part.strip() for part in raw_block.split(";") if part.strip()]
+                if not block:
+                    continue
                 block_label = "Group " + block[0]
-                block_row = fdf_plot.loc[block].max(axis=0)
+                block_row = rows_for_block(fdf_plot, raw_block).fillna(0).max(axis=0)
                 block_rows.append(block_row)
                 block_labels.append(block_label)
                 group_defs.append(f"{block_label} = {', '.join(block)}")

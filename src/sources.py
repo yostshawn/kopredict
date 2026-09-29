@@ -16,7 +16,7 @@ ADDITIONAL_DATASETS_CSV = "additional_datasets_to_download.csv"
 def metadata_dir() -> Path:
     """Directory of the DepMap catalog, the file list, and the extra datasets."""
     candidates = [
-        Path(__file__).resolve().parents[2] / "metadata",
+        Path(__file__).resolve().parents[1] / "metadata",
         Path.cwd() / "metadata",
     ]
     for path in candidates:
