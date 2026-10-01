@@ -93,6 +93,36 @@ def test_effect_size_is_the_mean_gap_not_the_sum_and_flips_for_inverse():
     assert large_forward == ["large_gap"]
 
 
+def test_resistance_keeps_a_positive_gap_and_names_the_less_essential_zeros():
+    groups = ["c1", "c2", "c3", "c4"]
+    present = pd.DataFrame([[1, 1, 0, 0]], index=["ko"], columns=groups)
+    strong, _ = mean_filter_directions(
+        "crispr",
+        present,
+        _target(groups, [0.3, 0.3, 0.0, 0.0]),
+        min_effect_size=0.2,
+        direction="resistance",
+    )
+    weak, _ = mean_filter_directions(
+        "crispr",
+        present,
+        _target(groups, [0.1, 0.1, 0.0, 0.0]),
+        min_effect_size=0.2,
+        direction="resistance",
+    )
+    flipped = pd.DataFrame([[0, 0, 1, 1]], index=["wt"], columns=groups)
+    _, inverse = mean_filter_directions(
+        "crispr",
+        flipped,
+        _target(groups, [0.3, 0.3, 0.0, 0.0]),
+        min_effect_size=0.2,
+        direction="resistance",
+    )
+    assert strong == ["ko"]
+    assert weak == []
+    assert inverse == ["wt"]
+
+
 def test_mean_filter_ignores_missing_cells_and_keeps_either_negative_group():
     celllines = ["c1", "c2", "c3"]
     features = pd.DataFrame(

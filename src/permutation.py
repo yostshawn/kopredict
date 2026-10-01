@@ -26,6 +26,7 @@ def run_permutation_null_pvalues(
     wilcox_score_column=None,
     random_state=None,
     min_effect_size=-0.2,
+    direction="sensitivity",
 ):
     """Run null permutation: shuffle cell line labels, return unfiltered p/q values."""
     tdf = tdf.copy()
@@ -40,6 +41,7 @@ def run_permutation_null_pvalues(
         wilcox_cutoff=1,
         qval_cutoff=1,
         min_effect_size=min_effect_size,
+        direction=direction,
     )
     pvals = pvals_df["p_value"].dropna().values.tolist()
     qvals = (
@@ -59,6 +61,7 @@ def permutation_cutoffs_from_frames(
     percentile=5,
     n_jobs=1,
     min_effect_size=-0.2,
+    direction="sensitivity",
 ):
     """Estimate p-value and q-value cutoffs by shuffling labels on one feature matrix.
 
@@ -79,6 +82,7 @@ def permutation_cutoffs_from_frames(
             wilcox_score_column=wilcox_score_column,
             random_state=i,
             min_effect_size=min_effect_size,
+            direction=direction,
         )
         min_p = min(pvals) if pvals else 1.0
         min_q = min(qvals) if qvals else 1.0
@@ -184,4 +188,5 @@ def estimate_significant_pvalue_cutoff(
         percentile=percentile,
         n_jobs=n_jobs,
         min_effect_size=min_effect_size,
+        direction="sensitivity",
     )

@@ -23,8 +23,9 @@ from database import pull_target_gene_dependency_scores
 class FeatureNode:
     """Tree node for feature groups. convert_to_list_of_lists() returns paths as list of lists."""
 
-    def __init__(self, f):
+    def __init__(self, f, sens_res="sensitive"):
         self.feature = f
+        self.sens_res = sens_res
         self.children = []
 
     def add_child(self, child):
@@ -38,6 +39,18 @@ class FeatureNode:
         all_paths = []
         for child in self.children:
             all_paths.extend(child.convert_to_list_of_lists(current_path + [self.feature]))
+        return all_paths
+
+    def convert_to_node_paths(self, current_path=None):
+        """Paths of nodes, including ``sens_res`` on each child."""
+        if current_path is None:
+            current_path = []
+        path = current_path + [self]
+        if not self.children:
+            return [path]
+        all_paths = []
+        for child in self.children:
+            all_paths.extend(child.convert_to_node_paths(path))
         return all_paths
 
 
@@ -207,24 +220,16 @@ def expanded_feature_labels(names) -> list[str]:
     return labels
 
 
-def mean_filter_directions(score_column=None, fdf=None, tdf=None, min_effect_size=-0.2):
-    """Features whose sensitive group is at least ``min_effect_size`` below the other group.
-
-    The effect is the mean raw score of the 1s minus the mean of the 0s. An inverse
-    feature uses the opposite difference. Missing cells are left out of both means.
-    Returns ``(forward_names, inverse_names)``.
-    """
-    if fdf is None or fdf.empty:
-        return [], []
-    if tdf is None or tdf.empty:
-        sys.exit("ERROR: Need to provide target dataframe 'tdf = PANDAS'")
+def _mean_differences(score_column, fdf, tdf) -> pd.Series:
+    """Mean raw score of the 1s minus the mean of the 0s. Missing cells are left out."""
+    if fdf is None or fdf.empty or tdf is None or tdf.empty:
+        return pd.Series(dtype=float)
     if score_column is None or score_column not in tdf.columns:
         sys.exit("ERROR: Provide score column and make sure it is in the target dataframe")
-
     cellline_scores = tdf.groupby("cellline")[score_column].sum()
     common_celllines = fdf.columns.intersection(cellline_scores.index)
     if len(common_celllines) == 0:
-        return [], []
+        return pd.Series(dtype=float)
     values = fdf.loc[:, common_celllines].to_numpy(dtype=np.float32, copy=False)
     scores = cellline_scores.reindex(common_celllines).to_numpy(dtype=np.float64)
     finite_score = np.isfinite(scores)
@@ -238,12 +243,38 @@ def mean_filter_directions(score_column=None, fdf=None, tdf=None, min_effect_siz
     mean_zeros = np.full(len(n_zeros), np.nan, dtype=np.float64)
     np.divide(sum_ones, n_ones, out=mean_ones, where=n_ones > 0)
     np.divide(sum_zeros, n_zeros, out=mean_zeros, where=n_zeros > 0)
-    forward_effect = mean_ones - mean_zeros
-    inverse_effect = mean_zeros - mean_ones
-    names = fdf.index.to_numpy()
-    forward = names[np.isfinite(forward_effect) & (forward_effect <= min_effect_size)].tolist()
-    inverse = names[np.isfinite(inverse_effect) & (inverse_effect <= min_effect_size)].tolist()
-    return forward, inverse
+    return pd.Series(mean_ones - mean_zeros, index=fdf.index)
+
+
+def mean_filter_directions(score_column=None, fdf=None, tdf=None, min_effect_size=-0.2, direction="sensitivity"):
+    """Features whose sensitive group is at least ``min_effect_size`` below the other group.
+
+    The effect is the mean raw score of the 1s minus the mean of the 0s. An inverse
+    feature uses the opposite difference. Missing cells are left out of both means.
+    Returns ``(forward_names, inverse_names)``.
+    """
+    if fdf is None or fdf.empty:
+        return [], []
+    if tdf is None or tdf.empty:
+        sys.exit("ERROR: Need to provide target dataframe 'tdf = PANDAS'")
+    if score_column is None or score_column not in tdf.columns:
+        sys.exit("ERROR: Provide score column and make sure it is in the target dataframe")
+
+    diff = _mean_differences(score_column, fdf, tdf)
+    if diff.empty:
+        return [], []
+    forward_effect = diff.to_numpy()
+    inverse_effect = -forward_effect
+    if direction == "resistance":
+        limit = min_effect_size if min_effect_size > 0 else abs(min_effect_size)
+        forward_keep = np.isfinite(forward_effect) & (forward_effect >= limit)
+        inverse_keep = np.isfinite(inverse_effect) & (inverse_effect >= limit)
+    else:
+        limit = min_effect_size if min_effect_size < 0 else -abs(min_effect_size)
+        forward_keep = np.isfinite(forward_effect) & (forward_effect <= limit)
+        inverse_keep = np.isfinite(inverse_effect) & (inverse_effect <= limit)
+    names = diff.index.to_numpy()
+    return names[forward_keep].tolist(), names[inverse_keep].tolist()
 
 
 def _swap_feature_row(row: pd.Series) -> pd.Series:
@@ -365,13 +396,13 @@ def return_minmax_series(df, value_col, mean_scale=True):
     return scaled_series
 
 
-def wilcoxon_test(group, tdf, score_column):
+def wilcoxon_test(group, tdf, score_column, alternative="less"):
     """Wilcoxon rank-sum test: feature-positive vs feature-negative cell lines."""
     g1 = tdf.loc[tdf["cellline"].isin(group[group == 1].index.tolist()), score_column].tolist()
     g2 = tdf.loc[tdf["cellline"].isin(group[group == 0].index.tolist()), score_column].tolist()
     if len(g1) > 0 and len(g2) > 0:
         try:
-            return sig_figs(stats.ranksums(g1, g2, alternative="less")[1], 3)
+            return sig_figs(stats.ranksums(g1, g2, alternative=alternative)[1], 3)
         except ValueError:
             return np.nan
     return np.nan
@@ -448,22 +479,23 @@ def _directional_frame(index, p_forward, p_inverse) -> pd.DataFrame:
 
 
 def directional_wilcoxon_table(
-    fdf, tdf, filter_score_column, wilcox_score_column, min_effect_size=-0.2
+    fdf, tdf, filter_score_column, wilcox_score_column, min_effect_size=-0.2, direction="sensitivity"
 ) -> pd.DataFrame:
     """Wilcoxon rows for both group directions, with one BH correction across them.
 
-    A direction is tested only when the sensitive group's mean raw score is at least
-    ``min_effect_size`` below the other group. A forward hit keeps the feature name.
-    An inverse hit is ``{feature}_inverse``.
+    ``direction`` is ``sensitivity`` (lower scores) or ``resistance`` (higher scores).
+    ``effect_size`` is the named group's mean minus the other group's mean.
     """
-    empty = pd.DataFrame(columns=["feature", "p_value", "q_value"])
+    empty = pd.DataFrame(columns=["feature", "p_value", "q_value", "effect_size"])
     if fdf is None or fdf.empty:
         return empty
+    effects = _mean_differences(wilcox_score_column, fdf, tdf)
     forward, inverse = mean_filter_directions(
         score_column=wilcox_score_column,
         fdf=fdf,
         tdf=tdf,
         min_effect_size=min_effect_size,
+        direction=direction,
     )
     ordered = list(dict.fromkeys([*forward, *inverse]))
     if not ordered:
@@ -475,15 +507,19 @@ def directional_wilcoxon_table(
     inverse_set = set(map(str, inverse))
     for name in ordered:
         key = str(name)
+        raw_effect = effects.get(name, np.nan)
+        if isinstance(raw_effect, pd.Series):
+            raw_effect = raw_effect.iloc[0]
+        effect = float(raw_effect) if pd.notna(raw_effect) else np.nan
         if key in forward_set:
-            p_value = both.at[name, "p_forward"]
+            p_value = both.at[name, "p_inverse" if direction == "resistance" else "p_forward"]
             if np.isfinite(p_value):
-                rows.append((key, float(p_value)))
+                rows.append((key, float(p_value), effect))
         if key in inverse_set:
-            p_value = both.at[name, "p_inverse"]
+            p_value = both.at[name, "p_forward" if direction == "resistance" else "p_inverse"]
             if np.isfinite(p_value):
-                rows.append((inverse_feature_name(key), float(p_value)))
-    table = pd.DataFrame(rows, columns=["feature", "p_value"])
+                rows.append((inverse_feature_name(key), float(p_value), -effect))
+    table = pd.DataFrame(rows, columns=["feature", "p_value", "effect_size"])
     if table.empty:
         return empty
     _reject, q_values, _, _ = multipletests(table["p_value"], method="fdr_bh")
@@ -499,6 +535,7 @@ def debug_wilcoxon_feature_ranking(
     filter_score_column=None,
     wilcox_score_column=None,
     min_effect_size=-0.2,
+    direction="sensitivity",
 ):
     """Wilcoxon + BH q-values for mean-filtered features (same as ``return_possible_features``), top ``top_n`` by p-value.
 
@@ -509,7 +546,8 @@ def debug_wilcoxon_feature_ranking(
     if wilcox_score_column is None:
         wilcox_score_column = score_column
     wilcox_pvals = directional_wilcoxon_table(
-        fdf, tdf, filter_score_column, wilcox_score_column, min_effect_size=min_effect_size
+        fdf, tdf, filter_score_column, wilcox_score_column,
+        min_effect_size=min_effect_size, direction=direction,
     )
     if wilcox_pvals.empty:
         return pd.DataFrame(columns=["feature", "p_value", "q_value"])
@@ -525,6 +563,7 @@ def debug_print_top_wilcoxon_features(
     filter_score_column=None,
     wilcox_score_column=None,
     min_effect_size=-0.2,
+    direction="sensitivity",
 ):
     """Print top ``top_n`` mean-filtered features ranked by Wilcoxon ``p_value`` (with ``q_value``)."""
     file = file or sys.stdout
@@ -536,6 +575,7 @@ def debug_print_top_wilcoxon_features(
         filter_score_column=filter_score_column,
         wilcox_score_column=wilcox_score_column,
         min_effect_size=min_effect_size,
+        direction=direction,
     )
     show_filter_col = filter_score_column if filter_score_column is not None else score_column
     show_wilcox_col = wilcox_score_column if wilcox_score_column is not None else score_column
@@ -563,6 +603,7 @@ def return_possible_features(
     filter_score_column=None,
     wilcox_score_column=None,
     min_effect_size=-0.2,
+    direction="sensitivity",
 ):
     """Filter features by mean then run Wilcoxon/FDR on both group directions.
 
@@ -581,6 +622,7 @@ def return_possible_features(
         filter_score_column,
         wilcox_score_column,
         min_effect_size=min_effect_size,
+        direction=direction,
     )
     if wilcox_pvals.empty:
         return pd.DataFrame(columns=["feature", "p_value", "q_value"])

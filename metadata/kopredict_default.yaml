@@ -4,7 +4,7 @@
 # Options:  kopredict --help
 
 # Gene whose CRISPR or RNAi score is the outcome.
-target: PPM1D
+target: SKP2
 
 # crispr or rnai
 dataset: crispr
@@ -50,6 +50,13 @@ null_percentile: 5
 # Sensitive-group mean minus the other group's mean must be at or below this value.
 # The inverse direction uses the opposite difference. Missing cells are left out.
 min_effect_size: -0.2
+
+# Minimum rise in mean raw score for a resistant group (present or absent state).
+resistance_min_effect_size: 0.2
+
+# Sensitive parent effect size required before a resistant child is added.
+# -0.2 matches min_effect_size, so it adds no extra filter.
+strong_min_effect_size: -0.2
 
 # Parallel shuffle workers. 1 runs them one at a time.
 n_jobs: 1

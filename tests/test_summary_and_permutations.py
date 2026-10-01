@@ -15,6 +15,8 @@ from plotting import summary_csv_path
 def test_default_yaml_sets_effect_size_and_null_percentile():
     config = load_run_config(None)
     assert config.min_effect_size == -0.2
+    assert config.resistance_min_effect_size == 0.2
+    assert config.strong_min_effect_size == -0.2
     assert config.null_percentile == 5
 
 
@@ -56,6 +58,27 @@ def test_summary_rows_count_the_and_mask_and_flag_an_empty_tree():
     )
     assert flagged[0]["Group"] == "FLAG - No Significant Features"
     assert flagged[0]["sens_res"] == "sensitive"
+
+
+def test_resistant_child_row_is_marked_resistant():
+    celllines = ["c1", "c2", "c3", "c4"]
+    features = pd.DataFrame([[1, 1, 0, 0]], index=["CDKN2A_ko"], columns=celllines)
+    scores = pd.DataFrame({"cellline": celllines, "crispr": [2.0, 1.0, -1.0, -2.0]})
+    root = FeatureNode("PPM1D")
+    root.add_child(FeatureNode("CDKN2A_ko", sens_res="resistant"))
+    rows = build_cohort_summary_rows(
+        feature_tree=root,
+        fdf=features,
+        tdf_filtered=scores,
+        target="PPM1D",
+        dataset="crispr",
+        cancertype="SOLID",
+        oncotree_column="oncotreeprimarydisease",
+        logic_type="AND",
+        ko_datatype="crispr",
+    )
+    assert rows[0]["sens_res"] == "resistant"
+    assert rows[0]["Wilcoxon_pval"] is not None
 
 
 def test_summary_csv_path_matches_the_boxplot_name(tmp_path):

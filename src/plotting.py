@@ -83,11 +83,13 @@ def create_boxplot(
     )
     fdf_plot = fdf.reindex(columns=cohort_cols)
 
-    sig_feature_list_of_list = tree.convert_to_list_of_lists()
+    sig_feature_list_of_list = tree.convert_to_node_paths()
 
     with PdfPages(pdf_path) as pdf:
         for set_idx, cur_set in enumerate(sig_feature_list_of_list):
-            feature_blocks = cur_set[1:]
+            feature_nodes = cur_set[1:]
+            if not feature_nodes:
+                continue
             plot_data = []
             p_values = {}
             logic_map = {}
@@ -97,16 +99,19 @@ def create_boxplot(
             else:
                 cumulative_mask = pd.Series(False, index=fdf_plot.columns)
 
-            first_block_feats = feature_blocks[0]
+            first_block_feats = feature_nodes[0].feature
             wt_mask = ~rows_for_block(fdf_plot, first_block_feats).fillna(0).any()
             wt_series = tdf.loc[tdf["cellline"].isin(fdf_plot.columns[wt_mask]), ko_datatype]
             n_wt = int(len(wt_series))
             wt_group_label = f"WT (n={n_wt})"
             for val in wt_series:
-                plot_data.append({"Group": wt_group_label, "Value": val})
+                plot_data.append({"Group": wt_group_label, "Value": val, "Kind": "WT"})
             logic_map[wt_group_label] = f"Baseline (WT), n={n_wt} cell lines"
+            previous_mask = None
 
-            for step_idx, block_string in enumerate(feature_blocks):
+            for step_idx, node in enumerate(feature_nodes):
+                block_string = node.feature
+                is_resistant = getattr(node, "sens_res", "sensitive") == "resistant"
                 block_mask = rows_for_block(fdf_plot, block_string).fillna(0).any()
                 if logic_type.upper() == "AND":
                     cumulative_mask = cumulative_mask & block_mask
@@ -118,11 +123,18 @@ def create_boxplot(
                 short_label = f"Step {step_idx + 1}\n(n={len(group_series)})"
                 step_key = f"Step {step_idx + 1}"
                 logic_map[step_key] = " | ".join(features)
+                kind = "resistant" if is_resistant else "sensitive"
                 for val in group_series:
-                    plot_data.append({"Group": short_label, "Value": val})
-                if not group_series.empty and not wt_series.empty:
+                    plot_data.append({"Group": short_label, "Value": val, "Kind": kind})
+                if is_resistant and previous_mask is not None:
+                    reference = tdf.loc[tdf["cellline"].isin(fdf_plot.columns[previous_mask]), ko_datatype]
+                    if not group_series.empty and not reference.empty:
+                        _, p_val = stats.ranksums(group_series, reference, alternative="greater")
+                        p_values[short_label] = sig_figs(p_val, 3)
+                elif not group_series.empty and not wt_series.empty:
                     _, p_val = stats.ranksums(group_series, wt_series, alternative="less")
                     p_values[short_label] = sig_figs(p_val, 3)
+                previous_mask = cumulative_mask.copy()
 
             if not plot_data:
                 continue
@@ -132,7 +144,16 @@ def create_boxplot(
                 data=df_plot, x="Group", y="Value", hue="Group", palette="viridis", legend=False
             )
             sns.stripplot(
-                data=df_plot, x="Group", y="Value", color="black", alpha=0.3, size=4
+                data=df_plot,
+                x="Group",
+                y="Value",
+                hue="Kind",
+                hue_order=["WT", "sensitive", "resistant"],
+                palette={"WT": "0.15", "sensitive": "#d62728", "resistant": "#1f77b4"},
+                dodge=False,
+                legend=False,
+                alpha=0.45,
+                size=4,
             )
             for i, group in enumerate(df_plot["Group"].unique()):
                 if group in p_values:
@@ -148,6 +169,8 @@ def create_boxplot(
                     )
             legend_info = (
                 f"STEP ADDITIONS (cumulative mask: {logic_type.upper()} between blocks)\n"
+                + "Red points: sensitive. Blue points: resistant.\n"
+                + "Resistant p is the upper tail versus the combined parent cell lines.\n"
                 + "-" * 25
                 + "\n"
             )
@@ -228,19 +251,20 @@ def create_oncoplot(
     )
 
     with PdfPages(pdf_path) as pdf:
-        for path_idx, path in enumerate(tree.convert_to_list_of_lists()):
-            if len(path) < 2:
+        for path_idx, path in enumerate(tree.convert_to_node_paths()):
+            feature_nodes = path[1:]
+            if not feature_nodes:
                 continue
-            path_label = " -> ".join(path[1:]).replace(";", " ")
+            path_label = " -> ".join(node.feature for node in feature_nodes).replace(";", " ")
             block_rows = []
             block_labels = []
             group_defs = []
-            for raw_block in path[1:]:
-                block = [part.strip() for part in raw_block.split(";") if part.strip()]
+            for node in feature_nodes:
+                block = [part.strip() for part in node.feature.split(";") if part.strip()]
                 if not block:
                     continue
                 block_label = "Group " + block[0]
-                block_row = rows_for_block(fdf_plot, raw_block).fillna(0).max(axis=0)
+                block_row = rows_for_block(fdf_plot, node.feature).fillna(0).max(axis=0)
                 block_rows.append(block_row)
                 block_labels.append(block_label)
                 group_defs.append(f"{block_label} = {', '.join(block)}")

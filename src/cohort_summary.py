@@ -51,7 +51,9 @@ def _cumulative_mask(fdf_plot, feature_blocks: list, logic_type: str, up_to_k: i
     return m
 
 
-def _best_feature_wilcox_p_in_block(fdf_plot, tdf_plot, score_col: str, block_string: str):
+def _best_feature_wilcox_p_in_block(
+    fdf_plot, tdf_plot, score_col: str, block_string: str, alternative="less"
+):
     parts = [part.strip() for part in str(block_string).split(";") if part.strip()]
     if len(parts) <= 1:
         candidates = parts or [str(block_string)]
@@ -65,7 +67,7 @@ def _best_feature_wilcox_p_in_block(fdf_plot, tdf_plot, score_col: str, block_st
             continue
         if row.empty:
             continue
-        p = wilcoxon_test(row.iloc[0], tdf_plot, score_col)
+        p = wilcoxon_test(row.iloc[0], tdf_plot, score_col, alternative=alternative)
         if p is None or (isinstance(p, float) and np.isnan(p)):
             continue
         if best_f is None or p < best_p:
@@ -201,21 +203,25 @@ def build_cohort_summary_rows(
         ]
 
     fdf_plot, tdf_plot, score_col, n_total = _cohort_fdf_tdf(fdf, tdf_filtered, ko_datatype)
-    paths = feature_tree.convert_to_list_of_lists()
+    paths = feature_tree.convert_to_node_paths()
     rows: list[dict] = []
     any_path_blocks = False
 
     for path in paths:
-        blocks = path[1:] if len(path) > 1 else []
-        if not blocks:
+        nodes = path[1:] if len(path) > 1 else []
+        if not nodes:
             continue
         any_path_blocks = True
-        for k in range(len(blocks)):
+        blocks = [node.feature for node in nodes]
+        for k, node in enumerate(nodes):
             m = _cumulative_mask(fdf_plot, blocks, logic_type, k)
             n_mut = int(m.sum())
             n_wt = int(n_total - n_mut)
-            block_k = blocks[k]
-            grp_f, grp_p = _best_feature_wilcox_p_in_block(fdf_plot, tdf_plot, score_col, block_k)
+            block_k = node.feature
+            alternative = "greater" if getattr(node, "sens_res", "sensitive") == "resistant" else "less"
+            grp_f, grp_p = _best_feature_wilcox_p_in_block(
+                fdf_plot, tdf_plot, score_col, block_k, alternative=alternative
+            )
             tree_parts = blocks[: k + 1]
             group_tree = " -> ".join(tree_parts)
             biomarker_set = _format_biomarker_set(block_k)
@@ -226,6 +232,7 @@ def build_cohort_summary_rows(
             rows.append(
                 {
                     **base,
+                    "sens_res": "resistant" if alternative == "greater" else "sensitive",
                     "Group": grp_f if grp_f is not None else "",
                     "Biomarker_set": biomarker_set,
                     "Group_tree": group_tree,

@@ -178,6 +178,8 @@ def load_run_config(path: Path | None) -> SimpleNamespace:
         n_jobs=int(loaded.get("n_jobs", 1)),
         null_percentile=float(loaded.get("null_percentile", 5)),
         min_effect_size=float(loaded.get("min_effect_size", -0.2)),
+        resistance_min_effect_size=float(loaded.get("resistance_min_effect_size", 0.2)),
+        strong_min_effect_size=float(loaded.get("strong_min_effect_size", -0.2)),
         vmin=float(loaded.get("vmin", -1)),
         vmax=float(loaded.get("vmax", 1)),
         debug_wilcox=debug,
@@ -202,6 +204,8 @@ def _run_single_cohort_analysis(
     n_jobs,
     null_percentile,
     min_effect_size,
+    resistance_min_effect_size,
+    strong_min_effect_size,
     cur_or_flag,
     oncotree_column,
     cohort_csv_path,
@@ -329,6 +333,8 @@ def _run_single_cohort_analysis(
         n_jobs=n_jobs,
         percentile=null_percentile,
         min_effect_size=min_effect_size,
+        resistance_min_effect_size=resistance_min_effect_size,
+        strong_min_effect_size=strong_min_effect_size,
     )
 
     logic_type = "OR" if cur_or_flag else "AND"
@@ -411,6 +417,7 @@ def main(argv: list[str] | None = None):
     cur_target = args.target
     cur_dataset = str(args.dataset).lower()
     cur_or_flag = args.progression == "OR"
+    print(f"Run: target={cur_target}  dataset={cur_dataset}  logic={args.progression}")
     group_options = args.group_options
     essentiality_threshold = (
         float(args.essentiality_threshold)
@@ -483,6 +490,8 @@ def main(argv: list[str] | None = None):
                 n_jobs=args.n_jobs,
                 null_percentile=args.null_percentile,
                 min_effect_size=args.min_effect_size,
+                resistance_min_effect_size=args.resistance_min_effect_size,
+                strong_min_effect_size=args.strong_min_effect_size,
                 cur_or_flag=cur_or_flag,
                 oncotree_column=args.oncotree_column,
                 cohort_csv_path=None,
@@ -569,6 +578,8 @@ def main(argv: list[str] | None = None):
         n_jobs=args.n_jobs,
         null_percentile=args.null_percentile,
         min_effect_size=args.min_effect_size,
+        resistance_min_effect_size=args.resistance_min_effect_size,
+        strong_min_effect_size=args.strong_min_effect_size,
         cur_or_flag=cur_or_flag,
         oncotree_column=args.oncotree_column,
         cohort_csv_path=None,
