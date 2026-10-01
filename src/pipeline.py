@@ -448,29 +448,30 @@ def add_next_best_features_to_tree(
 
         child_path = list(path_features) + list(cur_features)
         child_effect = _group_effect(cur_features, filtered_feature_set)
-        add_next_best_features_to_tree(
-            source_fdf=source_fdf,
-            excluded_features=list(excluded),
-            tdf=cur_tdf,
-            cl_list=cur_cl_list,
-            cur_node=cur_feature_node,
-            filter_score_column=filter_score_column,
-            wilcox_score_column=wilcox_score_column,
-            min_feature_count=min_feature_count,
-            min_geom_pval=min_geom_pval,
-            parent_feature=cur_feature_string,
-            or_flag=or_flag,
-            max_next_feature_subsets=max_next_feature_subsets,
-            n_permutations=n_permutations,
-            n_jobs=n_jobs,
-            percentile=percentile,
-            min_effect_size=sensitivity_min_effect_size,
-            resistance_min_effect_size=resistance_min_effect_size,
-            strong_min_effect_size=strong_min_effect_size,
-            direction="sensitivity",
-            sensitivity_min_effect_size=sensitivity_min_effect_size,
-            path_features=child_path,
-        )
+        if direction != "resistance":
+            add_next_best_features_to_tree(
+                source_fdf=source_fdf,
+                excluded_features=list(excluded),
+                tdf=cur_tdf,
+                cl_list=cur_cl_list,
+                cur_node=cur_feature_node,
+                filter_score_column=filter_score_column,
+                wilcox_score_column=wilcox_score_column,
+                min_feature_count=min_feature_count,
+                min_geom_pval=min_geom_pval,
+                parent_feature=cur_feature_string,
+                or_flag=or_flag,
+                max_next_feature_subsets=max_next_feature_subsets,
+                n_permutations=n_permutations,
+                n_jobs=n_jobs,
+                percentile=percentile,
+                min_effect_size=sensitivity_min_effect_size,
+                resistance_min_effect_size=resistance_min_effect_size,
+                strong_min_effect_size=strong_min_effect_size,
+                direction="sensitivity",
+                sensitivity_min_effect_size=sensitivity_min_effect_size,
+                path_features=child_path,
+            )
         resistance_allowed = direction == "resistance" or child_effect <= strong_min_effect_size
         if resistance_allowed:
             add_next_best_features_to_tree(

@@ -33,6 +33,13 @@ _HEMATOLOGIC_PRIMARY_DISEASES = {
     "Mixed Phenotype Acute Leukemia",
     "Plasma Cell Myeloma",
     "T Acute Lymphoblastic Leukemia",
+    "Mature B-Cell Neoplasms",
+    "B-Cell Acute Lymphoblastic Leukemia",
+    "T-Lymphoblastic Leukemia/Lymphoma",
+    "Myeloproliferative Neoplasms",
+    "Mature T and NK cell Neoplasms",
+    "Hodgkin Lymphoma",
+    "Acute Leukemias of Ambiguous Lineage",
 }
 
 

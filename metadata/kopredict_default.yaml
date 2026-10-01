@@ -4,10 +4,10 @@
 # Options:  kopredict --help
 
 # Gene whose CRISPR or RNAi score is the outcome.
-target: SKP2
+target: PRMT5
 
 # crispr or rnai
-dataset: crispr
+dataset: rnai
 
 # Cohort matched against oncotree_column. Use a string or a list.
 # Allowed values, and what SOLID and PANCANCER include, are in metadata/oncotree.yaml.
