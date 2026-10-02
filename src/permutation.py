@@ -9,8 +9,9 @@ import numpy as np
 from features import (
     get_target_df,
     add_zscore_to_df,
-    return_possible_features,
     cleanup_featureset,
+    prepare_permutation_layout,
+    permutation_null_for_seed,
 )
 from database import (
     load_cohort_definition_from_csv,
@@ -29,27 +30,8 @@ def run_permutation_null_pvalues(
     direction="sensitivity",
 ):
     """Run null permutation: shuffle cell line labels, return unfiltered p/q values."""
-    tdf = tdf.copy()
-    rng = np.random.default_rng(random_state)
-    tdf["cellline"] = rng.permutation(tdf["cellline"].values)
-
-    pvals_df = return_possible_features(
-        fdf,
-        tdf,
-        filter_score_column=filter_score_column,
-        wilcox_score_column=wilcox_score_column,
-        wilcox_cutoff=1,
-        qval_cutoff=1,
-        min_effect_size=min_effect_size,
-        direction=direction,
-    )
-    pvals = pvals_df["p_value"].dropna().values.tolist()
-    qvals = (
-        pvals_df["q_value"].dropna().values.tolist()
-        if "q_value" in pvals_df.columns
-        else []
-    )
-    return pvals, qvals
+    layout = prepare_permutation_layout(fdf, tdf, wilcox_score_column)
+    return permutation_null_for_seed(layout, random_state, min_effect_size, direction)
 
 
 def permutation_cutoffs_from_frames(
@@ -73,14 +55,12 @@ def permutation_cutoffs_from_frames(
     min_qvals_per_perm = []
     all_pvals_per_perm = []
     all_qvals_per_perm = []
+    layout = prepare_permutation_layout(fdf, tdf, wilcox_score_column)
 
     def _run_one_perm(i):
-        pvals, qvals = run_permutation_null_pvalues(
-            tdf=tdf,
-            fdf=fdf,
-            filter_score_column=filter_score_column,
-            wilcox_score_column=wilcox_score_column,
-            random_state=i,
+        pvals, qvals = permutation_null_for_seed(
+            layout,
+            i,
             min_effect_size=min_effect_size,
             direction=direction,
         )

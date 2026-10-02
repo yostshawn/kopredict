@@ -68,8 +68,9 @@ def test_effect_size_is_the_mean_gap_not_the_sum_and_flips_for_inverse():
 
     groups = ["c1", "c2", "c3", "c4"]
     exact = pd.DataFrame([[1, 1, 0, 0]], index=["at_threshold"], columns=groups)
+    # Equal groups: a -0.4 gap versus the complement is a -0.2 drop below the parent mean.
     forward, _ = mean_filter_directions(
-        "crispr", exact, _target(groups, [-0.2, -0.2, 0.0, 0.0]), min_effect_size=-0.2
+        "crispr", exact, _target(groups, [-0.4, -0.4, 0.0, 0.0]), min_effect_size=-0.2
     )
     assert forward == ["at_threshold"]
 
@@ -86,7 +87,7 @@ def test_effect_size_is_the_mean_gap_not_the_sum_and_flips_for_inverse():
         columns=celllines,
     )
     small = _target(celllines, [-0.1, -0.1, 0.0, 0.0])
-    large = _target(celllines, [-0.3, -0.3, 0.0, 0.0])
+    large = _target(celllines, [-0.4, -0.4, 0.0, 0.0])
     small_forward, _ = mean_filter_directions("crispr", features.loc[["small_gap"]], small, min_effect_size=-0.2)
     large_forward, _ = mean_filter_directions("crispr", features.loc[["large_gap"]], large, min_effect_size=-0.2)
     assert small_forward == []
@@ -96,17 +97,18 @@ def test_effect_size_is_the_mean_gap_not_the_sum_and_flips_for_inverse():
 def test_resistance_keeps_a_positive_gap_and_names_the_less_essential_zeros():
     groups = ["c1", "c2", "c3", "c4"]
     present = pd.DataFrame([[1, 1, 0, 0]], index=["ko"], columns=groups)
+    # Equal groups: a 0.4 gap versus the complement is a 0.2 rise above the parent mean.
     strong, _ = mean_filter_directions(
         "crispr",
         present,
-        _target(groups, [0.3, 0.3, 0.0, 0.0]),
+        _target(groups, [0.4, 0.4, 0.0, 0.0]),
         min_effect_size=0.2,
         direction="resistance",
     )
     weak, _ = mean_filter_directions(
         "crispr",
         present,
-        _target(groups, [0.1, 0.1, 0.0, 0.0]),
+        _target(groups, [0.3, 0.3, 0.0, 0.0]),
         min_effect_size=0.2,
         direction="resistance",
     )
@@ -114,7 +116,7 @@ def test_resistance_keeps_a_positive_gap_and_names_the_less_essential_zeros():
     _, inverse = mean_filter_directions(
         "crispr",
         flipped,
-        _target(groups, [0.3, 0.3, 0.0, 0.0]),
+        _target(groups, [0.4, 0.4, 0.0, 0.0]),
         min_effect_size=0.2,
         direction="resistance",
     )

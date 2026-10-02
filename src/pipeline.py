@@ -17,9 +17,11 @@ from database import (
 from features import (
     FeatureNode,
     add_zscore_to_df,
+    base_feature_name,
     cleanup_featureset,
     debug_print_top_wilcoxon_features,
     expanded_feature_labels,
+    feature_is_inverse,
     generaate_overlap_matrix,
     get_target_df,
     group_features_by_pvalue_v2,
@@ -63,6 +65,7 @@ def determine_best_biomrker_sets(
     wilcox_qval_cutoff=0.01,
     geom_pval_cutoff=0.0000000001,
     min_effect_size=-0.2,
+    direction="sensitivity",
 ):
     """Run feature pipeline: Wilcoxon filter -> overlap matrix -> hypergeom -> group."""
     filtered_feature_set = return_possible_features(
@@ -73,6 +76,7 @@ def determine_best_biomrker_sets(
         wilcox_cutoff=wilcox_pval_cutoff,
         qval_cutoff=wilcox_qval_cutoff,
         min_effect_size=min_effect_size,
+        direction=direction,
     )
     if filtered_feature_set.empty:
         return [], filtered_feature_set
@@ -182,6 +186,8 @@ def run_prediction_for_biomarker_given_target_dataset(
     min_effect_size=-0.2,
     resistance_min_effect_size=0.2,
     strong_min_effect_size=-0.2,
+    child_min_effect_size=-0.1,
+    child_resistance_min_effect_size=0.1,
 ):
     """Run full biomarker prediction pipeline for target/dataset.
 
@@ -213,80 +219,121 @@ def run_prediction_for_biomarker_given_target_dataset(
             min_effect_size=min_effect_size,
         )
 
-    list_of_list_features, scored_features = determine_best_biomrker_sets(
+    sens_scored = return_possible_features(
         filtered_features_df,
         target_df,
         filter_score_column=cur_filter_score_column,
         wilcox_score_column=cur_wilcox_score_column,
-        wilcox_pval_cutoff=min_wilcox_pval,
-        wilcox_qval_cutoff=min_wilcox_qval,
-        geom_pval_cutoff=min_geom_pval,
+        wilcox_cutoff=min_wilcox_pval,
+        qval_cutoff=min_wilcox_qval,
         min_effect_size=min_effect_size,
+        direction="sensitivity",
+    )
+    print(
+        f"Root resistance shuffles on {filtered_features_df.shape[1]} cell lines and "
+        f"{filtered_features_df.shape[0]} features ({n_permutations} permutations)..."
+    )
+    resistance_cutoffs = permutation_cutoffs_from_frames(
+        tdf=target_df,
+        fdf=filtered_features_df,
+        filter_score_column=cur_filter_score_column,
+        wilcox_score_column=cur_wilcox_score_column,
+        n_permutations=n_permutations,
+        percentile=percentile,
+        n_jobs=n_jobs,
+        min_effect_size=resistance_min_effect_size,
+        direction="resistance",
+    )
+    print(f"Resistance p-value cutoff: {resistance_cutoffs['pvalue_cutoff']}")
+    print(f"Resistance q-value cutoff: {resistance_cutoffs['qvalue_cutoff']}")
+    res_scored = return_possible_features(
+        filtered_features_df,
+        target_df,
+        filter_score_column=cur_filter_score_column,
+        wilcox_score_column=cur_wilcox_score_column,
+        wilcox_cutoff=resistance_cutoffs["pvalue_cutoff"],
+        qval_cutoff=resistance_cutoffs["qvalue_cutoff"],
+        min_effect_size=resistance_min_effect_size,
+        direction="resistance",
+    )
+    sens_scored, res_scored = _keep_smaller_root_pair(sens_scored, res_scored, filtered_features_df)
+    sens_groups, filtered_features_df = _group_scored_features(
+        filtered_features_df, target_df, sens_scored, min_geom_pval, cur_wilcox_score_column
+    )
+    res_groups, filtered_features_df = _group_scored_features(
+        filtered_features_df, target_df, res_scored, min_geom_pval, cur_wilcox_score_column
     )
 
     root_features = FeatureNode(target)
 
-    if not list_of_list_features:
+    if not sens_groups and not res_groups:
         return None, target_df
 
-    used_features = [feature for group in list_of_list_features for feature in group]
-    filtered_features_df = materialize_inverse_features(filtered_features_df, used_features)
-
-    excluded = []
-    for cur_features in list_of_list_features:
-        # Sibling k cannot see itself or any earlier sibling on this row.
-        excluded.extend(cur_features)
-        cur_feature_string = ";".join(cur_features)
-        cur_feature_node = FeatureNode(cur_feature_string)
-        root_features.add_child(cur_feature_node)
-        if or_flag:
-            cur_cl = list(
-                set(target_df["cellline"].values.tolist()).intersection(
-                    set(
-                        filtered_features_df.columns[
-                            filtered_features_df.loc[cur_features].max(axis=0) == 0
-                        ].values.tolist()
+    root_passes = (
+        ("sensitive", sens_groups, sens_scored),
+        ("resistant", res_groups, res_scored),
+    )
+    for sens_res, list_of_list_features, scored_features in root_passes:
+        excluded = []
+        for cur_features in list_of_list_features:
+            # Sibling k cannot see itself or any earlier sibling on this row.
+            excluded.extend(cur_features)
+            cur_feature_string = ";".join(cur_features)
+            node_label = "resistant" if sens_res == "resistant" else "sensitive"
+            cur_feature_node = FeatureNode(cur_feature_string, sens_res=node_label)
+            root_features.add_child(cur_feature_node)
+            if or_flag:
+                cur_cl = list(
+                    set(target_df["cellline"].values.tolist()).intersection(
+                        set(
+                            filtered_features_df.columns[
+                                filtered_features_df.loc[cur_features].max(axis=0) == 0
+                            ].values.tolist()
+                        )
                     )
                 )
-            )
-        else:
-            cur_cl = list(
-                set(target_df["cellline"].values.tolist()).intersection(
-                    set(
-                        filtered_features_df.columns[
-                            filtered_features_df.loc[cur_features].max(axis=0) > 0
-                        ].values.tolist()
+            else:
+                cur_cl = list(
+                    set(target_df["cellline"].values.tolist()).intersection(
+                        set(
+                            filtered_features_df.columns[
+                                filtered_features_df.loc[cur_features].max(axis=0) > 0
+                            ].values.tolist()
+                        )
                     )
                 )
-            )
 
-        add_next_best_features_to_tree(
-            source_fdf=fdf,
-            excluded_features=list(excluded),
-            tdf=target_df,
-            cl_list=cur_cl,
-            cur_node=cur_feature_node,
-            filter_score_column=cur_filter_score_column,
-            wilcox_score_column=cur_wilcox_score_column,
-            min_feature_count=min_feature_count,
-            min_geom_pval=min_geom_pval,
-            parent_feature=cur_feature_string,
-            or_flag=or_flag,
-            max_next_feature_subsets=max_next_feature_subsets,
-            n_permutations=n_permutations,
-            n_jobs=n_jobs,
-            percentile=percentile,
-            min_effect_size=min_effect_size,
-            resistance_min_effect_size=resistance_min_effect_size,
-            strong_min_effect_size=strong_min_effect_size,
-            direction="sensitivity",
-            sensitivity_min_effect_size=min_effect_size,
-            path_features=list(cur_features),
-        )
-        if _group_effect(cur_features, scored_features) <= strong_min_effect_size:
+            if sens_res == "resistant":
+                add_next_best_features_to_tree(
+                    source_fdf=fdf,
+                    excluded_features=list(cur_features),
+                    tdf=target_df,
+                    cl_list=cur_cl,
+                    cur_node=cur_feature_node,
+                    filter_score_column=cur_filter_score_column,
+                    wilcox_score_column=cur_wilcox_score_column,
+                    min_feature_count=min_feature_count,
+                    min_geom_pval=min_geom_pval,
+                    parent_feature=cur_feature_string,
+                    or_flag=or_flag,
+                    max_next_feature_subsets=max_next_feature_subsets,
+                    n_permutations=n_permutations,
+                    n_jobs=n_jobs,
+                    percentile=percentile,
+                    min_effect_size=child_resistance_min_effect_size,
+                    resistance_min_effect_size=resistance_min_effect_size,
+                    strong_min_effect_size=strong_min_effect_size,
+                    child_min_effect_size=child_min_effect_size,
+                    child_resistance_min_effect_size=child_resistance_min_effect_size,
+                    direction="resistance",
+                    sensitivity_min_effect_size=min_effect_size,
+                    path_features=list(cur_features),
+                )
+                continue
+
             add_next_best_features_to_tree(
                 source_fdf=fdf,
-                excluded_features=list(cur_features),
+                excluded_features=list(excluded),
                 tdf=target_df,
                 cl_list=cur_cl,
                 cur_node=cur_feature_node,
@@ -300,14 +347,125 @@ def run_prediction_for_biomarker_given_target_dataset(
                 n_permutations=n_permutations,
                 n_jobs=n_jobs,
                 percentile=percentile,
-                min_effect_size=resistance_min_effect_size,
+                min_effect_size=child_min_effect_size,
                 resistance_min_effect_size=resistance_min_effect_size,
                 strong_min_effect_size=strong_min_effect_size,
-                direction="resistance",
+                child_min_effect_size=child_min_effect_size,
+                child_resistance_min_effect_size=child_resistance_min_effect_size,
+                direction="sensitivity",
                 sensitivity_min_effect_size=min_effect_size,
                 path_features=list(cur_features),
             )
+            if _group_effect(cur_features, scored_features) <= strong_min_effect_size:
+                add_next_best_features_to_tree(
+                    source_fdf=fdf,
+                    excluded_features=list(cur_features),
+                    tdf=target_df,
+                    cl_list=cur_cl,
+                    cur_node=cur_feature_node,
+                    filter_score_column=cur_filter_score_column,
+                    wilcox_score_column=cur_wilcox_score_column,
+                    min_feature_count=min_feature_count,
+                    min_geom_pval=min_geom_pval,
+                    parent_feature=cur_feature_string,
+                    or_flag=or_flag,
+                    max_next_feature_subsets=max_next_feature_subsets,
+                    n_permutations=n_permutations,
+                    n_jobs=n_jobs,
+                    percentile=percentile,
+                    min_effect_size=resistance_min_effect_size,
+                    resistance_min_effect_size=resistance_min_effect_size,
+                    strong_min_effect_size=strong_min_effect_size,
+                    child_min_effect_size=child_min_effect_size,
+                    child_resistance_min_effect_size=child_resistance_min_effect_size,
+                    direction="resistance",
+                    sensitivity_min_effect_size=min_effect_size,
+                    path_features=list(cur_features),
+                )
     return root_features, target_df
+
+
+def _selected_cell_count(name: str, fdf: pd.DataFrame) -> int:
+    """Cell lines marked by a root feature. Inverse names count the base feature's zeros."""
+    base = base_feature_name(name)
+    if base not in fdf.index:
+        return 10**12
+    row = fdf.loc[base]
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[0]
+    if feature_is_inverse(name):
+        return int((row == 0).sum())
+    return int((row == 1).sum())
+
+
+def _keep_smaller_root_pair(sens_df: pd.DataFrame, res_df: pd.DataFrame, fdf: pd.DataFrame):
+    """If a feature and its inverse both pass, keep the selected group with fewer cell lines.
+
+    A tie keeps the non-inverse name when one of the two is inverse, and otherwise the
+    resistant name.
+    """
+    if sens_df is None or sens_df.empty or res_df is None or res_df.empty:
+        return sens_df, res_df
+    sens_by_base: dict[str, list[str]] = {}
+    for name in sens_df["feature"].astype(str):
+        sens_by_base.setdefault(base_feature_name(name), []).append(name)
+    res_by_base: dict[str, list[str]] = {}
+    for name in res_df["feature"].astype(str):
+        res_by_base.setdefault(base_feature_name(name), []).append(name)
+    drop_sens: set[str] = set()
+    drop_res: set[str] = set()
+    for base, sens_names in sens_by_base.items():
+        res_names = res_by_base.get(base, [])
+        for sens_name in sens_names:
+            for res_name in res_names:
+                sens_n = _selected_cell_count(sens_name, fdf)
+                res_n = _selected_cell_count(res_name, fdf)
+                if sens_n < res_n:
+                    drop_res.add(res_name)
+                    kept = sens_name
+                elif res_n < sens_n:
+                    drop_sens.add(sens_name)
+                    kept = res_name
+                elif feature_is_inverse(res_name) and not feature_is_inverse(sens_name):
+                    drop_res.add(res_name)
+                    kept = sens_name
+                else:
+                    drop_sens.add(sens_name)
+                    kept = res_name
+                print(
+                    f"Root pair {base}: keep {kept} "
+                    f"(sensitive n={sens_n}, resistant n={res_n})"
+                )
+    if drop_sens:
+        sens_df = sens_df.loc[~sens_df["feature"].astype(str).isin(drop_sens)].copy()
+    if drop_res:
+        res_df = res_df.loc[~res_df["feature"].astype(str).isin(drop_res)].copy()
+    return sens_df, res_df
+
+
+def _group_scored_features(fdf, tdf, scored, geom_pval_cutoff, wilcox_score_column):
+    """Overlap-group one scored feature table. Returns groups and the materialized matrix."""
+    if scored is None or scored.empty:
+        return [], fdf
+    fdf = materialize_inverse_features(fdf, scored["feature"].tolist())
+    overlaps = generaate_overlap_matrix(
+        fdf,
+        scored["feature"].values.tolist(),
+        scored["feature"].values.tolist(),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        overlapping = run_hypergeom_tests(fdf, overlaps)
+    groups = group_features_by_pvalue_v2(
+        overlapping,
+        feature_list=scored["feature"].values.tolist(),
+        pvalue_threshold=geom_pval_cutoff,
+        fdf=fdf,
+        tdf=tdf,
+        score_column=wilcox_score_column,
+        feature_wilcox_pvals=scored,
+    )
+    return groups, fdf
 
 
 def _group_effect(group, feature_set: pd.DataFrame) -> float:
@@ -346,6 +504,8 @@ def add_next_best_features_to_tree(
     min_effect_size=-0.2,
     resistance_min_effect_size=0.2,
     strong_min_effect_size=-0.2,
+    child_min_effect_size=-0.1,
+    child_resistance_min_effect_size=0.1,
     direction="sensitivity",
     sensitivity_min_effect_size=None,
     path_features=None,
@@ -465,9 +625,11 @@ def add_next_best_features_to_tree(
                 n_permutations=n_permutations,
                 n_jobs=n_jobs,
                 percentile=percentile,
-                min_effect_size=sensitivity_min_effect_size,
+                min_effect_size=child_min_effect_size,
                 resistance_min_effect_size=resistance_min_effect_size,
                 strong_min_effect_size=strong_min_effect_size,
+                child_min_effect_size=child_min_effect_size,
+                child_resistance_min_effect_size=child_resistance_min_effect_size,
                 direction="sensitivity",
                 sensitivity_min_effect_size=sensitivity_min_effect_size,
                 path_features=child_path,
@@ -490,9 +652,15 @@ def add_next_best_features_to_tree(
                 n_permutations=n_permutations,
                 n_jobs=n_jobs,
                 percentile=percentile,
-                min_effect_size=resistance_min_effect_size,
+                min_effect_size=(
+                    child_resistance_min_effect_size
+                    if direction == "resistance"
+                    else resistance_min_effect_size
+                ),
                 resistance_min_effect_size=resistance_min_effect_size,
                 strong_min_effect_size=strong_min_effect_size,
+                child_min_effect_size=child_min_effect_size,
+                child_resistance_min_effect_size=child_resistance_min_effect_size,
                 direction="resistance",
                 sensitivity_min_effect_size=sensitivity_min_effect_size,
                 path_features=child_path,

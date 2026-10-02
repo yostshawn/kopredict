@@ -4,19 +4,19 @@
 # Options:  kopredict --help
 
 # Gene whose CRISPR or RNAi score is the outcome.
-target: PRMT5
+target: SKP2
 
 # crispr or rnai
-dataset: rnai
+dataset: crispr
 
 # Cohort matched against oncotree_column. Use a string or a list.
 # Allowed values, and what SOLID and PANCANCER include, are in metadata/oncotree.yaml.
 # Leave null when cohort_csv is set.
-cancer_types: SOLID
+cancer_types: null
 
 # CSV with columns oncotree_column and name. See metadata/example_lung_cohort.csv.
 # Leave null when cancer_types is set.
-cohort_csv: null
+cohort_csv: /home/yostshawn/projects/KOscreenSensResMarkerPrediction/metadata/oncotree_cohorts_solid.csv
 
 # Model table column compared with cancer_types.
 oncotree_column: oncotreeprimarydisease
@@ -46,17 +46,22 @@ n_permutations: 50
 # 5 keeps the cutoff at the 5th percentile. A smaller number is stricter.
 null_percentile: 5
 
-# Mean raw-score gap required before a feature is tested.
-# Sensitive-group mean minus the other group's mean must be at or below this value.
-# The inverse direction uses the opposite difference. Missing cells are left out.
+# How far a sensitive child's mean must fall below its parent cell lines.
+# The first step uses the full cohort as the parent. Missing cells are left out.
 min_effect_size: -0.2
 
-# Minimum rise in mean raw score for a resistant group (present or absent state).
+# Minimum rise of a resistant group's mean above the parent cell lines.
 resistance_min_effect_size: 0.2
 
 # Sensitive parent effect size required before a resistant child is added.
 # -0.2 matches min_effect_size, so it adds no extra filter.
 strong_min_effect_size: -0.2
+
+# Later sensitive-to-sensitive step. The child mean must fall this far below its parent.
+child_min_effect_size: -0.1
+
+# Later resistant-to-resistant step. The child mean must rise this far above its parent.
+child_resistance_min_effect_size: 0.1
 
 # Parallel shuffle workers. 1 runs them one at a time.
 n_jobs: 1

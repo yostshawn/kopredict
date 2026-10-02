@@ -1,0 +1,29 @@
+oncotree_column,name,output_name,depmap_26q1_cell_lines,cohort_kind
+,PANCANCER,PANCANCER,2003,special
+,SOLID,SOLID,1718,special
+oncotreeprimarydisease,Non-Small Cell Lung Cancer,NSCLC,165,primary
+oncotreeprimarydisease,Melanoma,Melanoma,135,primary
+oncotreeprimarydisease,Colorectal Adenocarcinoma,Colorectal,96,primary
+oncotreesubtype,Lung Adenocarcinoma,LUAD,91,type
+oncotreeprimarydisease,Adult-Type Diffuse Glioma,Glioma,90,primary
+oncotreeprimarydisease,Head and Neck Squamous Cell Carcinoma,HNSCC,89,primary
+oncotreeprimarydisease,Lung Neuroendocrine Tumor,LungNET,86,primary
+oncotreeprimarydisease,Invasive Breast Carcinoma,Breast,83,primary
+oncotreeprimarydisease,Esophagogastric Adenocarcinoma,EGAC,74,primary
+oncotreesubtype,Colon Adenocarcinoma,COAD,74,type
+oncotreeprimarydisease,Ovarian Epithelial Tumor,Ovarian,72,primary
+oncotreesubtype,"Glioblastoma, IDH-Wildtype",GBM,67,type
+oncotreeprimarydisease,Pancreatic Adenocarcinoma,PAAD,64,primary
+oncotreesubtype,Oral Cavity Squamous Cell Carcinoma,OCSC,62,type
+oncotreeprimarydisease,Renal Cell Carcinoma,RCC,56,primary
+oncotreeprimarydisease,Neuroblastoma,NBL,53,primary
+oncotreeprimarydisease,Ewing Sarcoma,Ewing,51,primary
+oncotreesubtype,Breast Invasive Ductal Carcinoma,IDC,40,type
+oncotreeprimarydisease,Endometrial Carcinoma,UCEC,37,primary
+oncotreeprimarydisease,Intraductal Papillary Neoplasm of the Bile Duct,BileDuct,37,primary
+oncotreeprimarydisease,Pleural Mesothelioma,Mesothelioma,36,primary
+oncotreeprimarydisease,Osteosarcoma,Osteosarcoma,35,primary
+oncotreeprimarydisease,Bladder Urothelial Carcinoma,BLCA,35,primary
+oncotreesubtype,Stomach Adenocarcinoma,STAD,34,type
+oncotreesubtype,Lung Squamous Cell Carcinoma,LUSC,32,type
+oncotreeprimarydisease,Esophageal Squamous Cell Carcinoma,ESCC,30,primary

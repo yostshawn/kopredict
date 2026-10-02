@@ -1,0 +1,7 @@
+oncotree_column,name,output_name,depmap_26q1_cell_lines,cohort_kind
+oncotreeprimarydisease,Mature B-Cell Neoplasms,MatureB,130,primary
+oncotreeprimarydisease,Acute Myeloid Leukemia,AML,64,primary
+oncotreesubtype,Acute Myeloid Leukemia,AMLSubtype,42,type
+oncotreesubtype,Plasma Cell Myeloma,Myeloma,34,type
+oncotreeprimarydisease,B-Cell Acute Lymphoblastic Leukemia,BALL,33,primary
+oncotreesubtype,"Diffuse Large B-Cell Lymphoma, NOS",DLBCL,32,type

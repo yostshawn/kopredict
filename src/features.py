@@ -220,16 +220,16 @@ def expanded_feature_labels(names) -> list[str]:
     return labels
 
 
-def _mean_differences(score_column, fdf, tdf) -> pd.Series:
-    """Mean raw score of the 1s minus the mean of the 0s. Missing cells are left out."""
+def _score_group_means(score_column, fdf, tdf):
+    """Mean and count of the 1s and the 0s. Missing feature cells and scores are left out."""
     if fdf is None or fdf.empty or tdf is None or tdf.empty:
-        return pd.Series(dtype=float)
+        return None
     if score_column is None or score_column not in tdf.columns:
         sys.exit("ERROR: Provide score column and make sure it is in the target dataframe")
     cellline_scores = tdf.groupby("cellline")[score_column].sum()
     common_celllines = fdf.columns.intersection(cellline_scores.index)
     if len(common_celllines) == 0:
-        return pd.Series(dtype=float)
+        return None
     values = fdf.loc[:, common_celllines].to_numpy(dtype=np.float32, copy=False)
     scores = cellline_scores.reindex(common_celllines).to_numpy(dtype=np.float64)
     finite_score = np.isfinite(scores)
@@ -243,15 +243,33 @@ def _mean_differences(score_column, fdf, tdf) -> pd.Series:
     mean_zeros = np.full(len(n_zeros), np.nan, dtype=np.float64)
     np.divide(sum_ones, n_ones, out=mean_ones, where=n_ones > 0)
     np.divide(sum_zeros, n_zeros, out=mean_zeros, where=n_zeros > 0)
-    return pd.Series(mean_ones - mean_zeros, index=fdf.index)
+    return mean_ones, mean_zeros, n_ones.astype(np.float64), n_zeros.astype(np.float64), fdf.index
+
+
+def _mean_differences(score_column, fdf, tdf) -> pd.Series:
+    """Mean raw score of the 1s minus the mean of the 0s. Missing cells are left out."""
+    parts = _score_group_means(score_column, fdf, tdf)
+    if parts is None:
+        return pd.Series(dtype=float)
+    mean_ones, mean_zeros, _n_ones, _n_zeros, index = parts
+    return pd.Series(mean_ones - mean_zeros, index=index)
+
+
+def _parent_relative_shift(mean_ones, mean_zeros, n_ones, n_zeros):
+    """Named-group mean minus the mean of every 0 and 1 in that feature's parent subset."""
+    total = n_ones + n_zeros
+    pooled = np.full(len(total), np.nan, dtype=np.float64)
+    weighted = n_ones * mean_ones + n_zeros * mean_zeros
+    np.divide(weighted, total, out=pooled, where=(total > 0) & np.isfinite(weighted))
+    return mean_ones - pooled, mean_zeros - pooled
 
 
 def mean_filter_directions(score_column=None, fdf=None, tdf=None, min_effect_size=-0.2, direction="sensitivity"):
-    """Features whose sensitive group is at least ``min_effect_size`` below the other group.
+    """Features whose named group moves ``min_effect_size`` from the parent mean.
 
-    The effect is the mean raw score of the 1s minus the mean of the 0s. An inverse
-    feature uses the opposite difference. Missing cells are left out of both means.
-    Returns ``(forward_names, inverse_names)``.
+    The parent mean is every cell line in the subset being tested. A sensitive hit
+    must fall at least that far below it. A resistant hit must rise at least that far
+    above it. Missing cells are left out. Returns ``(forward_names, inverse_names)``.
     """
     if fdf is None or fdf.empty:
         return [], []
@@ -260,11 +278,11 @@ def mean_filter_directions(score_column=None, fdf=None, tdf=None, min_effect_siz
     if score_column is None or score_column not in tdf.columns:
         sys.exit("ERROR: Provide score column and make sure it is in the target dataframe")
 
-    diff = _mean_differences(score_column, fdf, tdf)
-    if diff.empty:
+    parts = _score_group_means(score_column, fdf, tdf)
+    if parts is None:
         return [], []
-    forward_effect = diff.to_numpy()
-    inverse_effect = -forward_effect
+    mean_ones, mean_zeros, n_ones, n_zeros, index = parts
+    forward_effect, inverse_effect = _parent_relative_shift(mean_ones, mean_zeros, n_ones, n_zeros)
     if direction == "resistance":
         limit = min_effect_size if min_effect_size > 0 else abs(min_effect_size)
         forward_keep = np.isfinite(forward_effect) & (forward_effect >= limit)
@@ -273,7 +291,7 @@ def mean_filter_directions(score_column=None, fdf=None, tdf=None, min_effect_siz
         limit = min_effect_size if min_effect_size < 0 else -abs(min_effect_size)
         forward_keep = np.isfinite(forward_effect) & (forward_effect <= limit)
         inverse_keep = np.isfinite(inverse_effect) & (inverse_effect <= limit)
-    names = diff.index.to_numpy()
+    names = index.to_numpy()
     return names[forward_keep].tolist(), names[inverse_keep].tolist()
 
 
@@ -484,12 +502,21 @@ def directional_wilcoxon_table(
     """Wilcoxon rows for both group directions, with one BH correction across them.
 
     ``direction`` is ``sensitivity`` (lower scores) or ``resistance`` (higher scores).
-    ``effect_size`` is the named group's mean minus the other group's mean.
+    ``effect_size`` is the named group's mean minus the mean of the parent subset.
     """
     empty = pd.DataFrame(columns=["feature", "p_value", "q_value", "effect_size"])
     if fdf is None or fdf.empty:
         return empty
     effects = _mean_differences(wilcox_score_column, fdf, tdf)
+    parent_shift = None
+    parts = _score_group_means(wilcox_score_column, fdf, tdf)
+    if parts is not None:
+        mean_ones, mean_zeros, n_ones, n_zeros, index = parts
+        forward_shift, inverse_shift = _parent_relative_shift(mean_ones, mean_zeros, n_ones, n_zeros)
+        parent_shift = (
+            pd.Series(forward_shift, index=index),
+            pd.Series(inverse_shift, index=index),
+        )
     forward, inverse = mean_filter_directions(
         score_column=wilcox_score_column,
         fdf=fdf,
@@ -513,18 +540,212 @@ def directional_wilcoxon_table(
         effect = float(raw_effect) if pd.notna(raw_effect) else np.nan
         if key in forward_set:
             p_value = both.at[name, "p_inverse" if direction == "resistance" else "p_forward"]
+            if parent_shift is not None:
+                effect = float(parent_shift[0].get(name, np.nan))
             if np.isfinite(p_value):
                 rows.append((key, float(p_value), effect))
         if key in inverse_set:
             p_value = both.at[name, "p_forward" if direction == "resistance" else "p_inverse"]
+            if parent_shift is not None:
+                effect = float(parent_shift[1].get(name, np.nan))
+            else:
+                effect = -effect
             if np.isfinite(p_value):
-                rows.append((inverse_feature_name(key), float(p_value), -effect))
+                rows.append((inverse_feature_name(key), float(p_value), effect))
     table = pd.DataFrame(rows, columns=["feature", "p_value", "effect_size"])
     if table.empty:
         return empty
     _reject, q_values, _, _ = multipletests(table["p_value"], method="fdr_bh")
     table["q_value"] = q_values
     return table
+
+
+class PermutationLayout:
+    """Feature matrix and missingness groups reused by every label shuffle.
+
+    Scores are the only thing that changes between permutations. The binary matrix,
+    ones/zeros counts, and shared missingness groups are built once.
+    """
+
+    def __init__(self, matrix, row_labels, row_scores, columns, group_ids, present_masks):
+        self.matrix = matrix
+        self.row_labels = np.asarray(row_labels)
+        self.row_scores = np.asarray(row_scores, dtype=np.float64)
+        self.columns = list(columns)
+        self.column_pos = {column: i for i, column in enumerate(self.columns)}
+        self.group_ids = group_ids
+        self.present_masks = present_masks
+        self.n_ones = (matrix == 1).sum(axis=1).astype(np.float64)
+        self.n_zeros = (matrix == 0).sum(axis=1).astype(np.float64)
+        self.is_one = matrix == 1
+        self.is_zero = matrix == 0
+        self.scores_all_finite = bool(np.isfinite(self.row_scores).all())
+
+
+def _missingness_groups(observed):
+    """Group feature rows that share one missingness pattern."""
+    if observed.size == 0:
+        return np.zeros(observed.shape[0], dtype=int), []
+    packed = np.packbits(observed, axis=1)
+    if packed.shape[1] == 0:
+        packed = np.zeros((observed.shape[0], 1), dtype=np.uint8)
+    row_keys = np.ascontiguousarray(packed).view(np.dtype((np.void, packed.shape[1]))).ravel()
+    _, group_ids = np.unique(row_keys, return_inverse=True)
+    present_masks = []
+    for group in range(int(group_ids.max()) + 1 if len(group_ids) else 0):
+        member = np.flatnonzero(group_ids == group)[0]
+        present_masks.append(observed[member])
+    return group_ids, present_masks
+
+
+def prepare_permutation_layout(fdf, tdf, score_column):
+    """Align features and scores once for a series of label shuffles."""
+    empty = PermutationLayout(
+        np.zeros((0, 0), dtype=np.float32),
+        np.array([]),
+        np.array([]),
+        [],
+        np.zeros(0, dtype=int),
+        [],
+    )
+    if fdf is None or fdf.empty or tdf is None or tdf.empty or score_column not in tdf.columns:
+        return empty
+    row_labels = tdf["cellline"].to_numpy()
+    row_scores = tdf[score_column].to_numpy(dtype=np.float64, copy=True)
+    common = fdf.columns.intersection(pd.unique(row_labels))
+    if len(common) == 0:
+        return empty
+    matrix = np.ascontiguousarray(fdf.loc[:, common].to_numpy(dtype=np.float32, copy=False))
+    observed = np.isfinite(matrix)
+    group_ids, present_masks = _missingness_groups(observed)
+    return PermutationLayout(matrix, row_labels, row_scores, common, group_ids, present_masks)
+
+
+def _assign_shuffled_scores(layout, shuffled_labels):
+    """Map a label permutation onto Wilcoxon scores and mean-filter scores.
+
+    A cell line keeps the first score in row order, matching ``drop_duplicates``.
+    The mean filter uses a group sum, and a group of only missing scores sums to 0.
+    """
+    n_col = len(layout.columns)
+    score_w = np.full(n_col, np.nan, dtype=np.float64)
+    score_m = np.zeros(n_col, dtype=np.float64)
+    seen = np.zeros(n_col, dtype=bool)
+    pos = layout.column_pos
+    for label, score in zip(shuffled_labels, layout.row_scores):
+        column = pos.get(label)
+        if column is None:
+            continue
+        if not seen[column]:
+            score_w[column] = score
+            seen[column] = True
+        if score == score:
+            score_m[column] += score
+    return score_w, score_m
+
+
+def _effect_keep_mask(mean_ones, mean_zeros, n_ones, n_zeros, min_effect_size, direction):
+    forward_effect, inverse_effect = _parent_relative_shift(mean_ones, mean_zeros, n_ones, n_zeros)
+    if direction == "resistance":
+        limit = min_effect_size if min_effect_size > 0 else abs(min_effect_size)
+        forward = np.isfinite(forward_effect) & (forward_effect >= limit)
+        inverse = np.isfinite(inverse_effect) & (inverse_effect >= limit)
+    else:
+        limit = min_effect_size if min_effect_size < 0 else -abs(min_effect_size)
+        forward = np.isfinite(forward_effect) & (forward_effect <= limit)
+        inverse = np.isfinite(inverse_effect) & (inverse_effect <= limit)
+    return forward, inverse
+
+
+def _group_means_for_layout(layout, score_m):
+    sum_ones = layout.is_one @ score_m
+    sum_zeros = layout.is_zero @ score_m
+    mean_ones = np.full(len(layout.n_ones), np.nan, dtype=np.float64)
+    mean_zeros = np.full(len(layout.n_zeros), np.nan, dtype=np.float64)
+    np.divide(sum_ones, layout.n_ones, out=mean_ones, where=layout.n_ones > 0)
+    np.divide(sum_zeros, layout.n_zeros, out=mean_zeros, where=layout.n_zeros > 0)
+    return mean_ones, mean_zeros, layout.n_ones, layout.n_zeros
+
+
+def _ranksum_tails(matrix, scores, group_ids, present_masks, selected):
+    """Rounded one-sided p-values for ``selected`` rows. Other rows stay NaN."""
+    p_forward = np.full(matrix.shape[0], np.nan, dtype=np.float64)
+    p_inverse = np.full(matrix.shape[0], np.nan, dtype=np.float64)
+    if not np.any(selected):
+        return p_forward, p_inverse
+    chosen = np.flatnonzero(selected)
+    is_one = matrix == 1
+    is_zero = matrix == 0
+    for group in np.unique(group_ids[chosen]):
+        rows = chosen[group_ids[chosen] == group]
+        present = present_masks[group]
+        if not np.any(present):
+            continue
+        ranks = stats.rankdata(scores[present])
+        ones = is_one[rows][:, present]
+        zeros = is_zero[rows][:, present]
+        n1 = ones.sum(axis=1)
+        n0 = zeros.sum(axis=1)
+        rank_sum = ones @ ranks
+        total = n1 + n0
+        expected = n1 * (total + 1) / 2.0
+        variance = n1 * n0 * (total + 1) / 12.0
+        ok = (n1 > 0) & (n0 > 0) & (variance > 0)
+        z = np.full(len(rows), np.nan, dtype=np.float64)
+        z[ok] = (rank_sum[ok] - expected[ok]) / np.sqrt(variance[ok])
+        p_forward[rows[ok]] = stats.norm.cdf(z[ok])
+        p_inverse[rows[ok]] = stats.norm.sf(z[ok])
+    return _sig_figs_array(p_forward), _sig_figs_array(p_inverse)
+
+
+def permutation_null_for_seed(layout, random_state, min_effect_size=-0.2, direction="sensitivity"):
+    """P-values and q-values for one label shuffle on a prepared layout.
+
+    Same order and rounding as ``directional_wilcoxon_table`` followed by ``p < 1``.
+    """
+    if layout.matrix.size == 0 or len(layout.columns) == 0:
+        return [], []
+    rng = np.random.default_rng(random_state)
+    shuffled_labels = rng.permutation(layout.row_labels)
+    score_w, score_m = _assign_shuffled_scores(layout, shuffled_labels)
+    forward, inverse = _effect_keep_mask(
+        *_group_means_for_layout(layout, score_m), min_effect_size, direction
+    )
+    selected = forward | inverse
+    if not np.any(selected):
+        return [], []
+    finite_scores = np.isfinite(score_w)
+    if layout.scores_all_finite and finite_scores.all():
+        p_forward, p_inverse = _ranksum_tails(
+            layout.matrix, score_w, layout.group_ids, layout.present_masks, selected
+        )
+    else:
+        matrix = layout.matrix[:, finite_scores]
+        observed = np.isfinite(matrix)
+        group_ids, present_masks = _missingness_groups(observed)
+        p_forward, p_inverse = _ranksum_tails(
+            matrix, score_w[finite_scores], group_ids, present_masks, selected
+        )
+    resistance = direction == "resistance"
+    p_values = []
+    for rows, tail in (
+        (np.flatnonzero(forward), p_inverse if resistance else p_forward),
+        (np.flatnonzero(inverse), p_forward if resistance else p_inverse),
+    ):
+        for row in rows:
+            p_value = tail[row]
+            if np.isfinite(p_value):
+                p_values.append(float(p_value))
+    if not p_values:
+        return [], []
+    _reject, q_values, _, _ = multipletests(p_values, method="fdr_bh")
+    kept_p = []
+    kept_q = []
+    for p_value, q_value in zip(p_values, q_values):
+        if p_value < 1:
+            kept_p.append(p_value)
+            kept_q.append(float(q_value))
+    return kept_p, kept_q
 
 
 def debug_wilcoxon_feature_ranking(

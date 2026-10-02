@@ -39,7 +39,7 @@ from features import get_target_df
 from local_data import get_data_dir
 from permutation import estimate_significant_pvalue_cutoff
 from pipeline import run_prediction_for_biomarker_given_target_dataset
-from plotting import create_boxplot, create_oncoplot, summary_csv_path
+from plotting import create_boxplot, summary_csv_path
 from prepare import FEATURES_FILENAME
 from sources import metadata_dir
 
@@ -180,6 +180,8 @@ def load_run_config(path: Path | None) -> SimpleNamespace:
         min_effect_size=float(loaded.get("min_effect_size", -0.2)),
         resistance_min_effect_size=float(loaded.get("resistance_min_effect_size", 0.2)),
         strong_min_effect_size=float(loaded.get("strong_min_effect_size", -0.2)),
+        child_min_effect_size=float(loaded.get("child_min_effect_size", -0.1)),
+        child_resistance_min_effect_size=float(loaded.get("child_resistance_min_effect_size", 0.1)),
         vmin=float(loaded.get("vmin", -1)),
         vmax=float(loaded.get("vmax", 1)),
         debug_wilcox=debug,
@@ -206,6 +208,8 @@ def _run_single_cohort_analysis(
     min_effect_size,
     resistance_min_effect_size,
     strong_min_effect_size,
+    child_min_effect_size,
+    child_resistance_min_effect_size,
     cur_or_flag,
     oncotree_column,
     cohort_csv_path,
@@ -335,6 +339,8 @@ def _run_single_cohort_analysis(
         min_effect_size=min_effect_size,
         resistance_min_effect_size=resistance_min_effect_size,
         strong_min_effect_size=strong_min_effect_size,
+        child_min_effect_size=child_min_effect_size,
+        child_resistance_min_effect_size=child_resistance_min_effect_size,
     )
 
     logic_type = "OR" if cur_or_flag else "AND"
@@ -372,19 +378,20 @@ def _run_single_cohort_analysis(
             output_root=output_root,
             plot_title_cancer=sum_ct,
         )
-        print("Creating oncoplots...")
-        create_oncoplot(
-            target_gene=cur_target,
-            ko_datatype=cur_dataset,
-            fdf=final_features_df,
-            tdf=target_df_pipeline,
-            tree=feature_tree,
-            vmin=vmin,
-            vmax=vmax,
-            logic_type=logic_type,
-            cancer_types=cur_cts,
-            output_root=output_root,
-        )
+        # Oncoplots are paused while resistance markers are in the tree.
+        # print("Creating oncoplots...")
+        # create_oncoplot(
+        #     target_gene=cur_target,
+        #     ko_datatype=cur_dataset,
+        #     fdf=final_features_df,
+        #     tdf=target_df_pipeline,
+        #     tree=feature_tree,
+        #     vmin=vmin,
+        #     vmax=vmax,
+        #     logic_type=logic_type,
+        #     cancer_types=cur_cts,
+        #     output_root=output_root,
+        # )
     return feature_tree, target_df_pipeline, summary_rows
 
 
@@ -455,8 +462,7 @@ def main(argv: list[str] | None = None):
             if req not in raw.columns:
                 print(f"ERROR: Cohort CSV must contain column {req!r}. Found: {list(raw.columns)}", file=sys.stderr)
                 sys.exit(2)
-        raw = raw[["oncotree_column", "name"]]
-        validate_cohort_table(raw)
+        validate_cohort_table(raw[["oncotree_column", "name"]])
 
         batch_root = os.path.join(output_root, cur_target, cur_dataset)
         os.makedirs(batch_root, exist_ok=True)
@@ -466,6 +472,8 @@ def main(argv: list[str] | None = None):
         for idx, row in raw.iterrows():
             col = row["oncotree_column"]
             name = row["name"]
+            output_name = str(row["output_name"]).strip() if "output_name" in row.index else ""
+            display_name = output_name or name
             names = parse_cohort_name_list(name)
             if not names:
                 continue
@@ -492,6 +500,8 @@ def main(argv: list[str] | None = None):
                 min_effect_size=args.min_effect_size,
                 resistance_min_effect_size=args.resistance_min_effect_size,
                 strong_min_effect_size=args.strong_min_effect_size,
+                child_min_effect_size=args.child_min_effect_size,
+                child_resistance_min_effect_size=args.child_resistance_min_effect_size,
                 cur_or_flag=cur_or_flag,
                 oncotree_column=args.oncotree_column,
                 cohort_csv_path=None,
@@ -505,13 +515,14 @@ def main(argv: list[str] | None = None):
                 min_essential_cell_lines=min_essential_cell_lines,
                 essentiality_threshold=essentiality_threshold,
                 max_next_feature_subsets=max_next_feature_subsets,
-                summary_cancertype=name,
+                summary_cancertype=display_name,
                 summary_oncotree_column=col,
             )
             summary_all.extend(srows)
 
             if feature_tree is not None:
-                cohort_dir = os.path.join(batch_root, safe_cohort_folder_name(col, name))
+                folder = output_name or safe_cohort_folder_name(col, name)
+                cohort_dir = os.path.join(batch_root, folder)
                 os.makedirs(cohort_dir, exist_ok=True)
                 print("Creating boxplots...")
                 create_boxplot(
@@ -521,23 +532,24 @@ def main(argv: list[str] | None = None):
                     ko_datatype=cur_dataset,
                     target_gene=cur_target,
                     logic_type=logic_type,
-                    cancer_types=[cancer_type_label],
+                    cancer_types=[display_name],
                     output_root=cohort_dir,
-                    plot_title_cancer=name,
+                    plot_title_cancer=display_name,
                 )
-                print("Creating oncoplots...")
-                create_oncoplot(
-                    target_gene=cur_target,
-                    ko_datatype=cur_dataset,
-                    fdf=final_features_df,
-                    tdf=target_df_pipeline,
-                    tree=feature_tree,
-                    vmin=args.vmin,
-                    vmax=args.vmax,
-                    logic_type=logic_type,
-                    cancer_types=[cancer_type_label],
-                    output_root=cohort_dir,
-                )
+                # Oncoplots are paused while resistance markers are in the tree.
+                # print("Creating oncoplots...")
+                # create_oncoplot(
+                #     target_gene=cur_target,
+                #     ko_datatype=cur_dataset,
+                #     fdf=final_features_df,
+                #     tdf=target_df_pipeline,
+                #     tree=feature_tree,
+                #     vmin=args.vmin,
+                #     vmax=args.vmax,
+                #     logic_type=logic_type,
+                #     cancer_types=[display_name],
+                #     output_root=cohort_dir,
+                # )
 
         summary_csv_name = _prediction_summary_csv_basename(
             target=cur_target,
@@ -580,6 +592,8 @@ def main(argv: list[str] | None = None):
         min_effect_size=args.min_effect_size,
         resistance_min_effect_size=args.resistance_min_effect_size,
         strong_min_effect_size=args.strong_min_effect_size,
+        child_min_effect_size=args.child_min_effect_size,
+        child_resistance_min_effect_size=args.child_resistance_min_effect_size,
         cur_or_flag=cur_or_flag,
         oncotree_column=args.oncotree_column,
         cohort_csv_path=None,

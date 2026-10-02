@@ -131,6 +131,9 @@ def create_boxplot(
                     if not group_series.empty and not reference.empty:
                         _, p_val = stats.ranksums(group_series, reference, alternative="greater")
                         p_values[short_label] = sig_figs(p_val, 3)
+                elif is_resistant and not group_series.empty and not wt_series.empty:
+                    _, p_val = stats.ranksums(group_series, wt_series, alternative="greater")
+                    p_values[short_label] = sig_figs(p_val, 3)
                 elif not group_series.empty and not wt_series.empty:
                     _, p_val = stats.ranksums(group_series, wt_series, alternative="less")
                     p_values[short_label] = sig_figs(p_val, 3)

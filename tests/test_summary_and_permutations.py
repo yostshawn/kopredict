@@ -7,7 +7,13 @@ import pandas as pd
 
 from cli_impl import load_run_config
 from cohort_summary import build_cohort_summary_rows
-from features import FeatureNode, directional_wilcoxon_table
+from features import (
+    FeatureNode,
+    directional_wilcoxon_table,
+    permutation_null_for_seed,
+    prepare_permutation_layout,
+)
+from pipeline import _keep_smaller_root_pair
 from permutation import permutation_cutoffs_from_frames
 from plotting import summary_csv_path
 
@@ -81,6 +87,23 @@ def test_resistant_child_row_is_marked_resistant():
     assert rows[0]["Wilcoxon_pval"] is not None
 
 
+def test_root_keeps_the_smaller_feature_when_both_directions_pass():
+    columns = [f"c{i}" for i in range(8)]
+    features = pd.DataFrame([[1, 1, 0, 0, 0, 0, 0, 0]], index=["TP53_ko"], columns=columns)
+    sensitive = pd.DataFrame({"feature": ["TP53_ko_inverse"], "p_value": [0.01]})
+    resistant = pd.DataFrame({"feature": ["TP53_ko"], "p_value": [0.01]})
+    kept_sensitive, kept_resistant = _keep_smaller_root_pair(sensitive, resistant, features)
+    assert kept_sensitive.empty
+    assert kept_resistant["feature"].tolist() == ["TP53_ko"]
+
+    common = pd.DataFrame([[1, 1, 1, 1, 1, 1, 0, 0]], index=["B_cell"], columns=columns)
+    sensitive = pd.DataFrame({"feature": ["B_cell_inverse"], "p_value": [0.01]})
+    resistant = pd.DataFrame({"feature": ["B_cell"], "p_value": [0.01]})
+    kept_sensitive, kept_resistant = _keep_smaller_root_pair(sensitive, resistant, common)
+    assert kept_resistant.empty
+    assert kept_sensitive["feature"].tolist() == ["B_cell_inverse"]
+
+
 def test_summary_csv_path_matches_the_boxplot_name(tmp_path):
     path = summary_csv_path("PPM1D", "crispr", "AND", ["SOLID"], tmp_path)
     today = date.today().strftime("%Y-%m-%d")
@@ -125,3 +148,47 @@ def test_permutation_cutoff_is_the_percentile_of_the_best_p_value():
     assert flipped_table.loc[flipped_table["feature"] == "ko_inverse", "p_value"].iloc[0] == min(
         flipped_table["p_value"]
     )
+
+
+def test_prepared_shuffle_matches_shuffling_the_cellline_labels():
+    celllines = [f"c{i}" for i in range(10)]
+    features = pd.DataFrame(
+        [
+            [1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 1, 1, 1, 1, np.nan],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+        ],
+        index=["separated", "missing_cell", "alternating"],
+        columns=celllines,
+    )
+    scores = np.array([-2.0, -1.5, -1.0, -0.5, 0.0, 0.4, 0.8, 1.2, 1.6, np.nan])
+    tdf = pd.DataFrame({"cellline": celllines, "crispr": scores})
+    layout = prepare_permutation_layout(features, tdf, "crispr")
+    matched = 0
+    for seed in range(12):
+        pvals, qvals = permutation_null_for_seed(layout, seed, min_effect_size=-0.2)
+        rng = np.random.default_rng(seed)
+        shuffled = tdf.copy()
+        shuffled["cellline"] = rng.permutation(tdf["cellline"].to_numpy())
+        table = directional_wilcoxon_table(features, shuffled, "crispr", "crispr")
+        kept = table[table["p_value"] < 1]
+        assert pvals == kept["p_value"].astype(float).tolist()
+        assert qvals == kept["q_value"].astype(float).tolist()
+        matched += int(len(pvals) > 0)
+    assert matched > 0
+
+    finite_scores = np.array([-2.0, -1.5, -1.0, -0.5, 0.0, 0.4, 0.8, 1.2, 1.6, 2.0])
+    finite_tdf = pd.DataFrame({"cellline": celllines, "crispr": finite_scores})
+    finite_layout = prepare_permutation_layout(features.fillna(0), finite_tdf, "crispr")
+    finite_hits = 0
+    for seed in range(12):
+        pvals, qvals = permutation_null_for_seed(finite_layout, seed, min_effect_size=-0.2)
+        rng = np.random.default_rng(seed)
+        shuffled = finite_tdf.copy()
+        shuffled["cellline"] = rng.permutation(finite_tdf["cellline"].to_numpy())
+        table = directional_wilcoxon_table(features.fillna(0), shuffled, "crispr", "crispr")
+        kept = table[table["p_value"] < 1]
+        assert pvals == kept["p_value"].astype(float).tolist()
+        assert qvals == kept["q_value"].astype(float).tolist()
+        finite_hits += int(len(pvals) > 0)
+    assert finite_hits > 0
