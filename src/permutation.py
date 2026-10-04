@@ -28,10 +28,13 @@ def run_permutation_null_pvalues(
     random_state=None,
     min_effect_size=-0.2,
     direction="sensitivity",
+    effect_vs_wt=False,
 ):
     """Run null permutation: shuffle cell line labels, return unfiltered p/q values."""
     layout = prepare_permutation_layout(fdf, tdf, wilcox_score_column)
-    return permutation_null_for_seed(layout, random_state, min_effect_size, direction)
+    return permutation_null_for_seed(
+        layout, random_state, min_effect_size, direction, effect_vs_wt=effect_vs_wt
+    )
 
 
 def permutation_cutoffs_from_frames(
@@ -44,6 +47,7 @@ def permutation_cutoffs_from_frames(
     n_jobs=1,
     min_effect_size=-0.2,
     direction="sensitivity",
+    effect_vs_wt=False,
 ):
     """Estimate p-value and q-value cutoffs by shuffling labels on one feature matrix.
 
@@ -63,6 +67,7 @@ def permutation_cutoffs_from_frames(
             i,
             min_effect_size=min_effect_size,
             direction=direction,
+            effect_vs_wt=effect_vs_wt,
         )
         min_p = min(pvals) if pvals else 1.0
         min_q = min(qvals) if qvals else 1.0

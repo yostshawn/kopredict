@@ -94,6 +94,23 @@ def test_effect_size_is_the_mean_gap_not_the_sum_and_flips_for_inverse():
     assert large_forward == ["large_gap"]
 
 
+def test_effect_vs_wt_uses_the_complement_gap():
+    groups = ["c1", "c2", "c3", "c4"]
+    features = pd.DataFrame([[1, 1, 0, 0]], index=["ko"], columns=groups)
+    # Complement gap -0.2; parent-relative shift is only -0.1.
+    scores = _target(groups, [-0.2, -0.2, 0.0, 0.0])
+    parent_forward, _ = mean_filter_directions("crispr", features, scores, min_effect_size=-0.2)
+    wt_forward, _ = mean_filter_directions(
+        "crispr", features, scores, min_effect_size=-0.2, effect_vs_wt=True
+    )
+    assert parent_forward == []
+    assert wt_forward == ["ko"]
+    table = directional_wilcoxon_table(
+        features, scores, "crispr", "crispr", min_effect_size=-0.2, effect_vs_wt=True
+    )
+    assert table.loc[table["feature"] == "ko", "effect_size"].iloc[0] == -0.2
+
+
 def test_resistance_keeps_a_positive_gap_and_names_the_less_essential_zeros():
     groups = ["c1", "c2", "c3", "c4"]
     present = pd.DataFrame([[1, 1, 0, 0]], index=["ko"], columns=groups)

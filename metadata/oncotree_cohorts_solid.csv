@@ -1,6 +1,5 @@
 oncotree_column,name,output_name,depmap_26q1_cell_lines,cohort_kind
-,PANCANCER,PANCANCER,2003,special
-,SOLID,SOLID,1718,special
+,PANCANCER,PANCANCER,1718,special
 oncotreeprimarydisease,Non-Small Cell Lung Cancer,NSCLC,165,primary
 oncotreeprimarydisease,Melanoma,Melanoma,135,primary
 oncotreeprimarydisease,Colorectal Adenocarcinoma,Colorectal,96,primary

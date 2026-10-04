@@ -104,10 +104,12 @@ def test_root_keeps_the_smaller_feature_when_both_directions_pass():
     assert kept_sensitive["feature"].tolist() == ["B_cell_inverse"]
 
 
-def test_summary_csv_path_matches_the_boxplot_name(tmp_path):
-    path = summary_csv_path("PPM1D", "crispr", "AND", ["SOLID"], tmp_path)
+def test_summary_csv_path_omits_logic_type(tmp_path):
+    path = summary_csv_path("PPM1D", "crispr", ["SOLID"], tmp_path)
     today = date.today().strftime("%Y-%m-%d")
-    assert path.endswith(f"{today}_PPM1D_crispr_AND_SOLID_summary.csv")
+    assert path.endswith(f"{today}_PPM1D_crispr_SOLID_summary.csv")
+    assert "_AND_" not in path
+    assert "_OR_" not in path
     assert "_boxplots" not in path
 
 

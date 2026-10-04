@@ -85,16 +85,14 @@ def _resolved_summary_cancer(cur_cts, summary_cancertype, summary_oncotree_colum
     return ";".join(cur_cts or []), (pipeline_oncotree_column or "")
 
 
-def _prediction_summary_csv_basename(
-    *, target: str, dataset: str, progression: str, ct_token: str
-) -> str:
-    """``YYMMDD_TARGET_DATASET_PROGRESSION_CT_prediction_summary.csv`` stem + extension."""
+def _prediction_summary_csv_basename(*, target: str, dataset: str, ct_token: str) -> str:
+    """``YYMMDD_TARGET_DATASET_CT_prediction_summary.csv`` stem + extension."""
     date_part = datetime.now().strftime("%y%m%d")
 
     def sf(s):
         return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(s)) or "x"
 
-    stem = f"{date_part}_{sf(target)}_{sf(dataset)}_{sf(progression)}_{sf(ct_token)}_prediction_summary"
+    stem = f"{date_part}_{sf(target)}_{sf(dataset)}_{sf(ct_token)}_prediction_summary"
     return f"{stem}.csv"
 
 
@@ -147,9 +145,6 @@ def load_run_config(path: Path | None) -> SimpleNamespace:
     dataset = str(loaded.get("dataset", "")).strip().lower()
     if dataset not in {"crispr", "rnai"}:
         raise SystemExit(f"dataset must be crispr or rnai (got {loaded.get('dataset')!r}).")
-    progression = str(loaded.get("progression", "AND")).strip().upper()
-    if progression not in {"AND", "OR"}:
-        raise SystemExit(f"progression must be AND or OR (got {loaded.get('progression')!r}).")
     cancer_types = None if _blank(loaded.get("cancer_types")) else loaded.get("cancer_types")
     cohort_csv = None if _blank(loaded.get("cohort_csv")) else str(loaded.get("cohort_csv"))
     if cancer_types and cohort_csv:
@@ -169,7 +164,6 @@ def load_run_config(path: Path | None) -> SimpleNamespace:
         cancer_types=cancer_types,
         cohort_csv=cohort_csv,
         oncotree_column=str(loaded.get("oncotree_column") or "oncotreeprimarydisease"),
-        progression=progression,
         group_options=None if _blank(loaded.get("group_options")) else str(loaded.get("group_options")),
         data_dir=None if _blank(loaded.get("data_dir")) else str(loaded.get("data_dir")),
         features_path=None if _blank(loaded.get("features_path")) else str(loaded.get("features_path")),
@@ -190,7 +184,98 @@ def load_run_config(path: Path | None) -> SimpleNamespace:
         max_next_feature_subsets=int(loaded.get("max_next_feature_subsets", 3)),
         keep_expression_features=bool(loaded.get("keep_expression_features", False)),
         keep_proteiomic_features=bool(loaded.get("keep_proteiomic_features", False)),
+        config_source=str(source),
     )
+
+
+def _flag_summary_rows(
+    *,
+    final_features_df,
+    target_df_filtered,
+    cur_target,
+    cur_dataset,
+    sum_ct,
+    sum_otc,
+    no_tree_group,
+):
+    """One FLAG row per logic type when the search cannot run."""
+    rows = []
+    for logic_type in ("AND", "OR"):
+        rows.extend(
+            build_cohort_summary_rows(
+                feature_tree=None,
+                fdf=final_features_df,
+                tdf_filtered=target_df_filtered,
+                target=cur_target,
+                dataset=cur_dataset,
+                cancertype=sum_ct,
+                oncotree_column=sum_otc,
+                logic_type=logic_type,
+                ko_datatype=cur_dataset,
+                no_tree_group=no_tree_group,
+            )
+        )
+    return rows
+
+
+def _summary_rows_for_trees(
+    *,
+    and_tree,
+    or_tree,
+    final_features_df,
+    target_df_pipeline,
+    cur_target,
+    cur_dataset,
+    sum_ct,
+    sum_otc,
+):
+    """Combine AND and OR summary rows. Root hits appear once per logic type."""
+    rows = []
+    for logic_type, tree in (("AND", and_tree), ("OR", or_tree)):
+        rows.extend(
+            build_cohort_summary_rows(
+                feature_tree=tree,
+                fdf=final_features_df,
+                tdf_filtered=target_df_pipeline,
+                target=cur_target,
+                dataset=cur_dataset,
+                cancertype=sum_ct,
+                oncotree_column=sum_otc,
+                logic_type=logic_type,
+                ko_datatype=cur_dataset,
+            )
+        )
+    return rows
+
+
+def _write_logic_boxplots(
+    *,
+    and_tree,
+    or_tree,
+    final_features_df,
+    target_df_pipeline,
+    cur_dataset,
+    cur_target,
+    cancer_types,
+    output_root,
+    plot_title_cancer,
+):
+    """Write one boxplot PDF per logic tree that has root markers."""
+    for logic_type, tree in (("AND", and_tree), ("OR", or_tree)):
+        if tree is None:
+            continue
+        print(f"Creating {logic_type} boxplots...")
+        create_boxplot(
+            tree=tree,
+            fdf=final_features_df,
+            tdf=target_df_pipeline,
+            ko_datatype=cur_dataset,
+            target_gene=cur_target,
+            logic_type=logic_type,
+            cancer_types=cancer_types,
+            output_root=output_root,
+            plot_title_cancer=plot_title_cancer,
+        )
 
 
 def _run_single_cohort_analysis(
@@ -210,7 +295,6 @@ def _run_single_cohort_analysis(
     strong_min_effect_size,
     child_min_effect_size,
     child_resistance_min_effect_size,
-    cur_or_flag,
     oncotree_column,
     cohort_csv_path,
     cohort_celllines_override,
@@ -226,14 +310,14 @@ def _run_single_cohort_analysis(
     summary_cancertype=None,
     summary_oncotree_column=None,
 ):
-    """Permutation null, z-score + feature search, and optional box/oncoplots for one cohort.
+    """Permutation null, z-score + feature search, and optional boxplots for one cohort.
 
     ``cell_raw`` lists model cell lines for the cohort; they are intersected with both
     feature matrix columns and target dependency rows. Fails the biomarker search with a
     summary-only path if overlap or essential-line counts (see ``min_essential_cell_lines``)
     are too small.
 
-    Returns ``(feature_tree, target_df_after_pipeline, summary_rows)``.
+    Returns ``(and_tree, or_tree, target_df_after_pipeline, summary_rows)``.
     """
     sum_ct, sum_otc = _resolved_summary_cancer(
         cur_cts, summary_cancertype, summary_oncotree_column, oncotree_column
@@ -250,24 +334,20 @@ def _run_single_cohort_analysis(
 
     if not final_cell_line_list:
         print("WARNING: No cell lines overlap features and target data for this cohort.", file=sys.stderr)
-        logic_type = "OR" if cur_or_flag else "AND"
         summary_rows = (
-            build_cohort_summary_rows(
-                feature_tree=None,
-                fdf=final_features_df,
-                tdf_filtered=target_df_filtered,
-                target=cur_target,
-                dataset=cur_dataset,
-                cancertype=sum_ct,
-                oncotree_column=sum_otc,
-                logic_type=logic_type,
-                ko_datatype=cur_dataset,
+            _flag_summary_rows(
+                final_features_df=final_features_df,
+                target_df_filtered=target_df_filtered,
+                cur_target=cur_target,
+                cur_dataset=cur_dataset,
+                sum_ct=sum_ct,
+                sum_otc=sum_otc,
                 no_tree_group="No overlapping cell lines",
             )
             if write_summary_rows
             else []
         )
-        return None, target_df_filtered, summary_rows
+        return None, None, target_df_filtered, summary_rows
 
     n_essential = _count_essential_cell_lines(
         target_df, cur_dataset, final_cell_line_list, essentiality_threshold
@@ -278,24 +358,20 @@ def _run_single_cohort_analysis(
             f"(need >= {min_essential_cell_lines}; threshold {essentiality_threshold}). Skipping analysis.",
             file=sys.stderr,
         )
-        logic_type = "OR" if cur_or_flag else "AND"
         summary_rows = (
-            build_cohort_summary_rows(
-                feature_tree=None,
-                fdf=final_features_df,
-                tdf_filtered=target_df_filtered,
-                target=cur_target,
-                dataset=cur_dataset,
-                cancertype=sum_ct,
-                oncotree_column=sum_otc,
-                logic_type=logic_type,
-                ko_datatype=cur_dataset,
+            _flag_summary_rows(
+                final_features_df=final_features_df,
+                target_df_filtered=target_df_filtered,
+                cur_target=cur_target,
+                cur_dataset=cur_dataset,
+                sum_ct=sum_ct,
+                sum_otc=sum_otc,
                 no_tree_group="Not enough essential cell lines",
             )
             if write_summary_rows
             else []
         )
-        return None, target_df_filtered, summary_rows
+        return None, None, target_df_filtered, summary_rows
 
     print("Estimating significant p-value cutoffs...")
     result = estimate_significant_pvalue_cutoff(
@@ -317,7 +393,7 @@ def _run_single_cohort_analysis(
     print(f"Q-value cutoff: {result['qvalue_cutoff']}")
 
     print("Running biomarker prediction pipeline...")
-    feature_tree, target_df_pipeline = run_prediction_for_biomarker_given_target_dataset(
+    and_tree, or_tree, target_df_pipeline = run_prediction_for_biomarker_given_target_dataset(
         target=cur_target,
         dataset=cur_dataset,
         fdf=final_features_df,
@@ -326,7 +402,6 @@ def _run_single_cohort_analysis(
         min_wilcox_pval=result["pvalue_cutoff"],
         min_wilcox_qval=result["qvalue_cutoff"],
         min_geom_pval=0.000000000000001,
-        or_flag=cur_or_flag,
         oncotree_column=oncotree_column,
         cohort_csv_path=cohort_csv_path,
         cohort_celllines_override=cohort_celllines_override,
@@ -343,56 +418,42 @@ def _run_single_cohort_analysis(
         child_resistance_min_effect_size=child_resistance_min_effect_size,
     )
 
-    logic_type = "OR" if cur_or_flag else "AND"
-
     summary_rows: list[dict] = []
     if write_summary_rows:
-        summary_rows = build_cohort_summary_rows(
-            feature_tree=feature_tree,
-            fdf=final_features_df,
-            tdf_filtered=target_df_pipeline,
-            target=cur_target,
-            dataset=cur_dataset,
-            cancertype=sum_ct,
-            oncotree_column=sum_otc,
-            logic_type=logic_type,
-            ko_datatype=cur_dataset,
+        summary_rows = _summary_rows_for_trees(
+            and_tree=and_tree,
+            or_tree=or_tree,
+            final_features_df=final_features_df,
+            target_df_pipeline=target_df_pipeline,
+            cur_target=cur_target,
+            cur_dataset=cur_dataset,
+            sum_ct=sum_ct,
+            sum_otc=sum_otc,
         )
 
-    if feature_tree is None:
+    if and_tree is None and or_tree is None:
         print("No significant features found.")
-        return feature_tree, target_df_pipeline, summary_rows
+        return and_tree, or_tree, target_df_pipeline, summary_rows
 
-    print("Feature paths:", feature_tree.convert_to_list_of_lists())
+    if and_tree is not None:
+        print("AND feature paths:", and_tree.convert_to_list_of_lists())
+    if or_tree is not None:
+        print("OR feature paths:", or_tree.convert_to_list_of_lists())
 
     if write_plots:
-        print("Creating boxplots...")
-        create_boxplot(
-            tree=feature_tree,
-            fdf=final_features_df,
-            tdf=target_df_pipeline,
-            ko_datatype=cur_dataset,
-            target_gene=cur_target,
-            logic_type=logic_type,
+        _write_logic_boxplots(
+            and_tree=and_tree,
+            or_tree=or_tree,
+            final_features_df=final_features_df,
+            target_df_pipeline=target_df_pipeline,
+            cur_dataset=cur_dataset,
+            cur_target=cur_target,
             cancer_types=cur_cts,
             output_root=output_root,
             plot_title_cancer=sum_ct,
         )
         # Oncoplots are paused while resistance markers are in the tree.
-        # print("Creating oncoplots...")
-        # create_oncoplot(
-        #     target_gene=cur_target,
-        #     ko_datatype=cur_dataset,
-        #     fdf=final_features_df,
-        #     tdf=target_df_pipeline,
-        #     tree=feature_tree,
-        #     vmin=vmin,
-        #     vmax=vmax,
-        #     logic_type=logic_type,
-        #     cancer_types=cur_cts,
-        #     output_root=output_root,
-        # )
-    return feature_tree, target_df_pipeline, summary_rows
+    return and_tree, or_tree, target_df_pipeline, summary_rows
 
 
 def main(argv: list[str] | None = None):
@@ -423,8 +484,7 @@ def main(argv: list[str] | None = None):
 
     cur_target = args.target
     cur_dataset = str(args.dataset).lower()
-    cur_or_flag = args.progression == "OR"
-    print(f"Run: target={cur_target}  dataset={cur_dataset}  logic={args.progression}")
+    print(f"Run: target={cur_target}  dataset={cur_dataset}  logic=AND+OR")
     group_options = args.group_options
     essentiality_threshold = (
         float(args.essentiality_threshold)
@@ -468,7 +528,6 @@ def main(argv: list[str] | None = None):
         os.makedirs(batch_root, exist_ok=True)
 
         summary_all: list[dict] = []
-        logic_type = "OR" if cur_or_flag else "AND"
         for idx, row in raw.iterrows():
             col = row["oncotree_column"]
             name = row["name"]
@@ -486,7 +545,7 @@ def main(argv: list[str] | None = None):
                 print("ERROR: Cohort CSV was not run.", file=sys.stderr)
                 sys.exit(2)
 
-            feature_tree, target_df_pipeline, srows = _run_single_cohort_analysis(
+            and_tree, or_tree, target_df_pipeline, srows = _run_single_cohort_analysis(
                 cur_target=cur_target,
                 cur_dataset=cur_dataset,
                 final_features_df=final_features_df,
@@ -502,7 +561,6 @@ def main(argv: list[str] | None = None):
                 strong_min_effect_size=args.strong_min_effect_size,
                 child_min_effect_size=args.child_min_effect_size,
                 child_resistance_min_effect_size=args.child_resistance_min_effect_size,
-                cur_or_flag=cur_or_flag,
                 oncotree_column=args.oncotree_column,
                 cohort_csv_path=None,
                 cohort_celllines_override=cell_raw,
@@ -520,41 +578,25 @@ def main(argv: list[str] | None = None):
             )
             summary_all.extend(srows)
 
-            if feature_tree is not None:
+            if and_tree is not None or or_tree is not None:
                 folder = output_name or safe_cohort_folder_name(col, name)
                 cohort_dir = os.path.join(batch_root, folder)
                 os.makedirs(cohort_dir, exist_ok=True)
-                print("Creating boxplots...")
-                create_boxplot(
-                    tree=feature_tree,
-                    fdf=final_features_df,
-                    tdf=target_df_pipeline,
-                    ko_datatype=cur_dataset,
-                    target_gene=cur_target,
-                    logic_type=logic_type,
+                _write_logic_boxplots(
+                    and_tree=and_tree,
+                    or_tree=or_tree,
+                    final_features_df=final_features_df,
+                    target_df_pipeline=target_df_pipeline,
+                    cur_dataset=cur_dataset,
+                    cur_target=cur_target,
                     cancer_types=[display_name],
                     output_root=cohort_dir,
                     plot_title_cancer=display_name,
                 )
-                # Oncoplots are paused while resistance markers are in the tree.
-                # print("Creating oncoplots...")
-                # create_oncoplot(
-                #     target_gene=cur_target,
-                #     ko_datatype=cur_dataset,
-                #     fdf=final_features_df,
-                #     tdf=target_df_pipeline,
-                #     tree=feature_tree,
-                #     vmin=args.vmin,
-                #     vmax=args.vmax,
-                #     logic_type=logic_type,
-                #     cancer_types=[display_name],
-                #     output_root=cohort_dir,
-                # )
 
         summary_csv_name = _prediction_summary_csv_basename(
             target=cur_target,
             dataset=cur_dataset,
-            progression=args.progression,
             ct_token="cohort",
         )
         out_csv = os.path.join(batch_root, summary_csv_name)
@@ -578,7 +620,7 @@ def main(argv: list[str] | None = None):
 
     nested_out = os.path.join(output_root, cur_target, cur_dataset)
 
-    feature_tree, _, summary_rows = _run_single_cohort_analysis(
+    and_tree, or_tree, _, summary_rows = _run_single_cohort_analysis(
         cur_target=cur_target,
         cur_dataset=cur_dataset,
         final_features_df=final_features_df,
@@ -594,7 +636,6 @@ def main(argv: list[str] | None = None):
         strong_min_effect_size=args.strong_min_effect_size,
         child_min_effect_size=args.child_min_effect_size,
         child_resistance_min_effect_size=args.child_resistance_min_effect_size,
-        cur_or_flag=cur_or_flag,
         oncotree_column=args.oncotree_column,
         cohort_csv_path=None,
         cohort_celllines_override=cell_raw,
@@ -609,14 +650,13 @@ def main(argv: list[str] | None = None):
         summary_cancertype=";".join(cur_cts),
         summary_oncotree_column=args.oncotree_column,
     )
-    logic_type = "OR" if cur_or_flag else "AND"
-    summary_path = summary_csv_path(cur_target, cur_dataset, logic_type, cur_cts, nested_out)
+    summary_path = summary_csv_path(cur_target, cur_dataset, cur_cts, nested_out)
     summary_df = pd.DataFrame(summary_rows, columns=SUMMARY_COLUMNS)
     summary_df = summary_df.drop_duplicates(keep="first").reset_index(drop=True)
     summary_df.to_csv(summary_path, index=False)
     print(f"Wrote summary: {summary_path}")
 
-    if feature_tree is None:
+    if and_tree is None and or_tree is None:
         sys.exit(0)
 
     print("Done.")

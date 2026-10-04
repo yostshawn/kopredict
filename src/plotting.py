@@ -50,12 +50,17 @@ def _build_plot_path(
     return plot_dir, pdf_path
 
 
-def summary_csv_path(target_gene, ko_datatype, logic_type, cancer_types, output_root="."):
-    """Same name as the boxplot PDF, with ``_summary.csv`` in place of ``_boxplots.pdf``."""
-    _, pdf_path = _build_plot_path(
-        target_gene, ko_datatype, logic_type, cancer_types, "boxplots", output_root=output_root
+def summary_csv_path(target_gene, ko_datatype, cancer_types, output_root="."):
+    """Combined AND/OR summary path: date_target_dataset_cancer_summary.csv."""
+    plot_dir = output_root
+    os.makedirs(plot_dir, exist_ok=True)
+    cancer_types = cancer_types or []
+    cancer_str = "_".join(_safe_filename(c) for c in cancer_types) if cancer_types else "all"
+    date_str = datetime.date.today().strftime("%Y-%m-%d")
+    return os.path.join(
+        plot_dir,
+        f"{date_str}_{target_gene}_{ko_datatype}_{cancer_str}_summary.csv",
     )
-    return pdf_path[: -len("_boxplots.pdf")] + "_summary.csv"
 
 
 def create_boxplot(

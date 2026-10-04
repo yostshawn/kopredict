@@ -96,6 +96,8 @@ Features that pass are grouped by a hypergeometric overlap test. Grouping does n
 
 A sensitive node can have both a sensitive child and a resistant child. A child is tested in the cell lines that already carry every marker on the path to its parent. A resistant child is added under a sensitive parent when that parent's effect size is at or below `strong_min_effect_size` (default `-0.2`, the same cutoff the parent already passed). A resistant parent can have another resistant child in that same subset. It does not open a sensitivity search. Each child uses shuffles in its own direction.
 
+Root scoring and grouping run once. From those same first-level markers the search grows an AND tree and an OR tree. AND continues inside the cell lines that carry the parent marker and uses parent-relative child cutoffs (`child_min_effect_size` / `child_resistance_min_effect_size`, default ±0.1). OR continues in the remaining cell lines. An OR same-direction sensitive child must fall `min_effect_size` (default `-0.2`) below its WT group so those lines stay clearly sensitive; an OR direction switch (sensitive to resistant, or the reverse) uses ±0.2 versus the parent mean. Later subset shuffles are separate for each tree and use that subset's own null percentile cutoff; a child is not required to beat its parent's p-value. Summary rows keep `Logic_type` as `AND` or `OR`. Each logic writes its own boxplot PDF.
+
 The tree expands siblings best first. At every row, the search under a sibling cannot see that sibling or any earlier sibling on the row, and features excluded by a parent stay excluded for the rest of that branch. A chosen feature also excludes its other direction.
 
 ## Run a search
@@ -131,7 +133,7 @@ oncotreecode,LUCA;GCLC;LCLC;LUMEC,23
 
 By default the search drops feature names containing `absolute`, `lowexp`, `highexp`, `depmapprot`, `sangerprot`, or `rppa`. Set `keep_expression_features` or `keep_proteiomic_features` to true in the YAML file to keep those families (`rppa` follows the protein flag).
 
-Plots and a summary CSV are written under `data/output/{target}/{dataset}/` unless `output_dir` is set in the YAML file. That folder sits inside `data/`, which git ignores. The summary uses the boxplot file name with `_summary.csv` in place of `_boxplots.pdf`. `sens_res` is `sensitive` on sensitivity rows and `resistant` on resistance rows.
+Plots and a summary CSV are written under `data/output/{target}/{dataset}/` unless `output_dir` is set in the YAML file. That folder sits inside `data/`, which git ignores. Each run writes AND and OR boxplot PDFs and one combined summary CSV. Boxplot names include `AND` or `OR`. The summary name omits that token and puts both trees in one file, with `Logic_type` set per row. `sens_res` is `sensitive` on sensitivity rows and `resistant` on resistance rows.
 
 ## Docker
 

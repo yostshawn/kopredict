@@ -1,0 +1,9 @@
+# PRMT5 RNAi, solid OncoTree cohorts, with expression and proteomics features.
+target: PRMT5
+dataset: rnai
+cancer_types: null
+cohort_csv: /home/yostshawn/projects/KOscreenSensResMarkerPrediction/metadata/oncotree_cohorts_solid.csv
+oncotree_column: oncotreeprimarydisease
+output_dir: /home/yostshawn/projects/KOscreenSensResMarkerPrediction/data/output_expr_prot
+keep_expression_features: true
+keep_proteiomic_features: true

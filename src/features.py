@@ -264,12 +264,32 @@ def _parent_relative_shift(mean_ones, mean_zeros, n_ones, n_zeros):
     return mean_ones - pooled, mean_zeros - pooled
 
 
-def mean_filter_directions(score_column=None, fdf=None, tdf=None, min_effect_size=-0.2, direction="sensitivity"):
-    """Features whose named group moves ``min_effect_size`` from the parent mean.
+def _directional_effects(mean_ones, mean_zeros, n_ones, n_zeros, effect_vs_wt=False):
+    """Forward and inverse named-group effects.
 
-    The parent mean is every cell line in the subset being tested. A sensitive hit
-    must fall at least that far below it. A resistant hit must rise at least that far
-    above it. Missing cells are left out. Returns ``(forward_names, inverse_names)``.
+    Parent-relative (default): named mean minus the mean of every 0 and 1 in the subset.
+    ``effect_vs_wt``: named mean minus the complementary group mean (mutant vs WT).
+    """
+    if effect_vs_wt:
+        return mean_ones - mean_zeros, mean_zeros - mean_ones
+    return _parent_relative_shift(mean_ones, mean_zeros, n_ones, n_zeros)
+
+
+def mean_filter_directions(
+    score_column=None,
+    fdf=None,
+    tdf=None,
+    min_effect_size=-0.2,
+    direction="sensitivity",
+    effect_vs_wt=False,
+):
+    """Features whose named group moves ``min_effect_size`` from the reference mean.
+
+    By default the reference is every cell line in the subset (parent mean). With
+    ``effect_vs_wt``, the reference is the complementary group (mutant vs WT).
+    A sensitive hit must fall at least that far below it. A resistant hit must rise
+    at least that far above it. Missing cells are left out. Returns
+    ``(forward_names, inverse_names)``.
     """
     if fdf is None or fdf.empty:
         return [], []
@@ -282,7 +302,9 @@ def mean_filter_directions(score_column=None, fdf=None, tdf=None, min_effect_siz
     if parts is None:
         return [], []
     mean_ones, mean_zeros, n_ones, n_zeros, index = parts
-    forward_effect, inverse_effect = _parent_relative_shift(mean_ones, mean_zeros, n_ones, n_zeros)
+    forward_effect, inverse_effect = _directional_effects(
+        mean_ones, mean_zeros, n_ones, n_zeros, effect_vs_wt=effect_vs_wt
+    )
     if direction == "resistance":
         limit = min_effect_size if min_effect_size > 0 else abs(min_effect_size)
         forward_keep = np.isfinite(forward_effect) & (forward_effect >= limit)
@@ -497,23 +519,32 @@ def _directional_frame(index, p_forward, p_inverse) -> pd.DataFrame:
 
 
 def directional_wilcoxon_table(
-    fdf, tdf, filter_score_column, wilcox_score_column, min_effect_size=-0.2, direction="sensitivity"
+    fdf,
+    tdf,
+    filter_score_column,
+    wilcox_score_column,
+    min_effect_size=-0.2,
+    direction="sensitivity",
+    effect_vs_wt=False,
 ) -> pd.DataFrame:
     """Wilcoxon rows for both group directions, with one BH correction across them.
 
     ``direction`` is ``sensitivity`` (lower scores) or ``resistance`` (higher scores).
-    ``effect_size`` is the named group's mean minus the mean of the parent subset.
+    ``effect_size`` is the named group's mean minus the parent subset mean, or minus the
+    complementary group mean when ``effect_vs_wt`` is true.
     """
     empty = pd.DataFrame(columns=["feature", "p_value", "q_value", "effect_size"])
     if fdf is None or fdf.empty:
         return empty
     effects = _mean_differences(wilcox_score_column, fdf, tdf)
-    parent_shift = None
+    named_shift = None
     parts = _score_group_means(wilcox_score_column, fdf, tdf)
     if parts is not None:
         mean_ones, mean_zeros, n_ones, n_zeros, index = parts
-        forward_shift, inverse_shift = _parent_relative_shift(mean_ones, mean_zeros, n_ones, n_zeros)
-        parent_shift = (
+        forward_shift, inverse_shift = _directional_effects(
+            mean_ones, mean_zeros, n_ones, n_zeros, effect_vs_wt=effect_vs_wt
+        )
+        named_shift = (
             pd.Series(forward_shift, index=index),
             pd.Series(inverse_shift, index=index),
         )
@@ -523,6 +554,7 @@ def directional_wilcoxon_table(
         tdf=tdf,
         min_effect_size=min_effect_size,
         direction=direction,
+        effect_vs_wt=effect_vs_wt,
     )
     ordered = list(dict.fromkeys([*forward, *inverse]))
     if not ordered:
@@ -540,14 +572,14 @@ def directional_wilcoxon_table(
         effect = float(raw_effect) if pd.notna(raw_effect) else np.nan
         if key in forward_set:
             p_value = both.at[name, "p_inverse" if direction == "resistance" else "p_forward"]
-            if parent_shift is not None:
-                effect = float(parent_shift[0].get(name, np.nan))
+            if named_shift is not None:
+                effect = float(named_shift[0].get(name, np.nan))
             if np.isfinite(p_value):
                 rows.append((key, float(p_value), effect))
         if key in inverse_set:
             p_value = both.at[name, "p_forward" if direction == "resistance" else "p_inverse"]
-            if parent_shift is not None:
-                effect = float(parent_shift[1].get(name, np.nan))
+            if named_shift is not None:
+                effect = float(named_shift[1].get(name, np.nan))
             else:
                 effect = -effect
             if np.isfinite(p_value):
@@ -644,8 +676,12 @@ def _assign_shuffled_scores(layout, shuffled_labels):
     return score_w, score_m
 
 
-def _effect_keep_mask(mean_ones, mean_zeros, n_ones, n_zeros, min_effect_size, direction):
-    forward_effect, inverse_effect = _parent_relative_shift(mean_ones, mean_zeros, n_ones, n_zeros)
+def _effect_keep_mask(
+    mean_ones, mean_zeros, n_ones, n_zeros, min_effect_size, direction, effect_vs_wt=False
+):
+    forward_effect, inverse_effect = _directional_effects(
+        mean_ones, mean_zeros, n_ones, n_zeros, effect_vs_wt=effect_vs_wt
+    )
     if direction == "resistance":
         limit = min_effect_size if min_effect_size > 0 else abs(min_effect_size)
         forward = np.isfinite(forward_effect) & (forward_effect >= limit)
@@ -698,7 +734,9 @@ def _ranksum_tails(matrix, scores, group_ids, present_masks, selected):
     return _sig_figs_array(p_forward), _sig_figs_array(p_inverse)
 
 
-def permutation_null_for_seed(layout, random_state, min_effect_size=-0.2, direction="sensitivity"):
+def permutation_null_for_seed(
+    layout, random_state, min_effect_size=-0.2, direction="sensitivity", effect_vs_wt=False
+):
     """P-values and q-values for one label shuffle on a prepared layout.
 
     Same order and rounding as ``directional_wilcoxon_table`` followed by ``p < 1``.
@@ -709,7 +747,10 @@ def permutation_null_for_seed(layout, random_state, min_effect_size=-0.2, direct
     shuffled_labels = rng.permutation(layout.row_labels)
     score_w, score_m = _assign_shuffled_scores(layout, shuffled_labels)
     forward, inverse = _effect_keep_mask(
-        *_group_means_for_layout(layout, score_m), min_effect_size, direction
+        *_group_means_for_layout(layout, score_m),
+        min_effect_size,
+        direction,
+        effect_vs_wt=effect_vs_wt,
     )
     selected = forward | inverse
     if not np.any(selected):
@@ -757,6 +798,7 @@ def debug_wilcoxon_feature_ranking(
     wilcox_score_column=None,
     min_effect_size=-0.2,
     direction="sensitivity",
+    effect_vs_wt=False,
 ):
     """Wilcoxon + BH q-values for mean-filtered features (same as ``return_possible_features``), top ``top_n`` by p-value.
 
@@ -767,8 +809,13 @@ def debug_wilcoxon_feature_ranking(
     if wilcox_score_column is None:
         wilcox_score_column = score_column
     wilcox_pvals = directional_wilcoxon_table(
-        fdf, tdf, filter_score_column, wilcox_score_column,
-        min_effect_size=min_effect_size, direction=direction,
+        fdf,
+        tdf,
+        filter_score_column,
+        wilcox_score_column,
+        min_effect_size=min_effect_size,
+        direction=direction,
+        effect_vs_wt=effect_vs_wt,
     )
     if wilcox_pvals.empty:
         return pd.DataFrame(columns=["feature", "p_value", "q_value"])
@@ -785,6 +832,7 @@ def debug_print_top_wilcoxon_features(
     wilcox_score_column=None,
     min_effect_size=-0.2,
     direction="sensitivity",
+    effect_vs_wt=False,
 ):
     """Print top ``top_n`` mean-filtered features ranked by Wilcoxon ``p_value`` (with ``q_value``)."""
     file = file or sys.stdout
@@ -797,6 +845,7 @@ def debug_print_top_wilcoxon_features(
         wilcox_score_column=wilcox_score_column,
         min_effect_size=min_effect_size,
         direction=direction,
+        effect_vs_wt=effect_vs_wt,
     )
     show_filter_col = filter_score_column if filter_score_column is not None else score_column
     show_wilcox_col = wilcox_score_column if wilcox_score_column is not None else score_column
@@ -825,11 +874,14 @@ def return_possible_features(
     wilcox_score_column=None,
     min_effect_size=-0.2,
     direction="sensitivity",
+    effect_vs_wt=False,
 ):
     """Filter features by mean then run Wilcoxon/FDR on both group directions.
 
     ``wilcox_score_column`` is the raw score used for the effect-size filter and the Wilcoxon test.
-    ``min_effect_size`` is the required mean difference (sensitive group minus the other group).
+    ``min_effect_size`` is the required mean difference for the named group. With
+    ``effect_vs_wt``, that difference is versus the complementary (WT) group; otherwise
+    it is versus the parent subset mean.
     ``score_column`` remains as a backward-compatible fallback when the two explicit
     columns are not supplied. Inverse hits are named ``{feature}_inverse``.
     """
@@ -844,6 +896,7 @@ def return_possible_features(
         wilcox_score_column,
         min_effect_size=min_effect_size,
         direction=direction,
+        effect_vs_wt=effect_vs_wt,
     )
     if wilcox_pvals.empty:
         return pd.DataFrame(columns=["feature", "p_value", "q_value"])
