@@ -70,13 +70,21 @@ def test_effect_size_is_the_mean_gap_not_the_sum_and_flips_for_inverse():
     exact = pd.DataFrame([[1, 1, 0, 0]], index=["at_threshold"], columns=groups)
     # Equal groups: a -0.4 gap versus the complement is a -0.2 drop below the parent mean.
     forward, _ = mean_filter_directions(
-        "crispr", exact, _target(groups, [-0.4, -0.4, 0.0, 0.0]), min_effect_size=-0.2
+        "crispr",
+        exact,
+        _target(groups, [-0.4, -0.4, 0.0, 0.0]),
+        min_effect_size=-0.2,
+        min_group_count=2,
     )
     assert forward == ["at_threshold"]
 
     flipped = pd.DataFrame([[0, 0, 1, 1]], index=["wt"], columns=groups)
     forward, inverse = mean_filter_directions(
-        "crispr", flipped, _target(groups, [-0.4, -0.4, 0.0, 0.0]), min_effect_size=-0.2
+        "crispr",
+        flipped,
+        _target(groups, [-0.4, -0.4, 0.0, 0.0]),
+        min_effect_size=-0.2,
+        min_group_count=2,
     )
     assert forward == []
     assert inverse == ["wt"]
@@ -88,8 +96,12 @@ def test_effect_size_is_the_mean_gap_not_the_sum_and_flips_for_inverse():
     )
     small = _target(celllines, [-0.1, -0.1, 0.0, 0.0])
     large = _target(celllines, [-0.4, -0.4, 0.0, 0.0])
-    small_forward, _ = mean_filter_directions("crispr", features.loc[["small_gap"]], small, min_effect_size=-0.2)
-    large_forward, _ = mean_filter_directions("crispr", features.loc[["large_gap"]], large, min_effect_size=-0.2)
+    small_forward, _ = mean_filter_directions(
+        "crispr", features.loc[["small_gap"]], small, min_effect_size=-0.2, min_group_count=2
+    )
+    large_forward, _ = mean_filter_directions(
+        "crispr", features.loc[["large_gap"]], large, min_effect_size=-0.2, min_group_count=2
+    )
     assert small_forward == []
     assert large_forward == ["large_gap"]
 
@@ -99,14 +111,22 @@ def test_effect_vs_wt_uses_the_complement_gap():
     features = pd.DataFrame([[1, 1, 0, 0]], index=["ko"], columns=groups)
     # Complement gap -0.2; parent-relative shift is only -0.1.
     scores = _target(groups, [-0.2, -0.2, 0.0, 0.0])
-    parent_forward, _ = mean_filter_directions("crispr", features, scores, min_effect_size=-0.2)
+    parent_forward, _ = mean_filter_directions(
+        "crispr", features, scores, min_effect_size=-0.2, min_group_count=2
+    )
     wt_forward, _ = mean_filter_directions(
-        "crispr", features, scores, min_effect_size=-0.2, effect_vs_wt=True
+        "crispr", features, scores, min_effect_size=-0.2, effect_vs_wt=True, min_group_count=2
     )
     assert parent_forward == []
     assert wt_forward == ["ko"]
     table = directional_wilcoxon_table(
-        features, scores, "crispr", "crispr", min_effect_size=-0.2, effect_vs_wt=True
+        features,
+        scores,
+        "crispr",
+        "crispr",
+        min_effect_size=-0.2,
+        effect_vs_wt=True,
+        min_group_count=2,
     )
     assert table.loc[table["feature"] == "ko", "effect_size"].iloc[0] == -0.2
 
@@ -121,6 +141,7 @@ def test_resistance_keeps_a_positive_gap_and_names_the_less_essential_zeros():
         _target(groups, [0.4, 0.4, 0.0, 0.0]),
         min_effect_size=0.2,
         direction="resistance",
+        min_group_count=2,
     )
     weak, _ = mean_filter_directions(
         "crispr",
@@ -128,6 +149,7 @@ def test_resistance_keeps_a_positive_gap_and_names_the_less_essential_zeros():
         _target(groups, [0.3, 0.3, 0.0, 0.0]),
         min_effect_size=0.2,
         direction="resistance",
+        min_group_count=2,
     )
     flipped = pd.DataFrame([[0, 0, 1, 1]], index=["wt"], columns=groups)
     _, inverse = mean_filter_directions(
@@ -136,6 +158,7 @@ def test_resistance_keeps_a_positive_gap_and_names_the_less_essential_zeros():
         _target(groups, [0.4, 0.4, 0.0, 0.0]),
         min_effect_size=0.2,
         direction="resistance",
+        min_group_count=2,
     )
     assert strong == ["ko"]
     assert weak == []
@@ -156,7 +179,9 @@ def test_mean_filter_ignores_missing_cells_and_keeps_either_negative_group():
     tdf = pd.DataFrame(
         {"cellline": celllines, "crispr_zscore": [-5.0, -5.0, 5.0]}
     )
-    forward, inverse = mean_filter_directions("crispr_zscore", features, tdf)
+    forward, inverse = mean_filter_directions(
+        "crispr_zscore", features, tdf, min_group_count=1
+    )
     assert forward == ["ones_essential"]
     assert inverse == ["zeros_essential"]
 

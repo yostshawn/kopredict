@@ -7,7 +7,9 @@ from scipy.stats import hypergeom
 
 from features import (
     expanded_feature_labels,
-    generaate_overlap_matrix,
+    feature_jaccard,
+    generate_overlap_matrix,
+    group_features_by_jaccard,
     group_features_by_pvalue_v2,
     restrict_features_to_celllines,
     run_hypergeom_tests,
@@ -24,10 +26,10 @@ def test_overlap_matrix_counts_shared_ones_and_skips_missing_cells():
         index=["A", "B"],
         columns=list("abcd"),
     )
-    overlap = generaate_overlap_matrix(features, ["A"], ["B"])
+    overlap = generate_overlap_matrix(features, ["A"], ["B"])
     assert overlap.loc["A", "B"] == 1
     with pytest.raises(KeyError):
-        generaate_overlap_matrix(features, ["missing"], ["B"])
+        generate_overlap_matrix(features, ["missing"], ["B"])
 
 
 def test_hypergeometric_p_value_matches_scipy():
@@ -39,7 +41,7 @@ def test_hypergeometric_p_value_matches_scipy():
         index=["A", "B"],
         columns=list("abcd"),
     )
-    overlap = generaate_overlap_matrix(features, ["A", "B"], ["A", "B"])
+    overlap = generate_overlap_matrix(features, ["A", "B"], ["A", "B"])
     result = run_hypergeom_tests(features, overlap)
     pair = result[(result["feature1"] == "A") & (result["feature2"] == "B")].iloc[0]
     # 4 shared lines, 2 ones in A, 2 ones in B, 1 shared one.
@@ -132,3 +134,24 @@ def test_limit_next_tree_subsets_keeps_the_best_groups():
     )
     kept = _limit_next_tree_subsets(groups, pvals, max_subsets=2)
     assert kept == [["b_only"], ["a_and_c", "c_weak"]]
+
+
+def test_jaccard_groups_near_identical_features():
+    columns = list("abcdefghij")
+    # A and B: intersection 9, union 10 -> Jaccard 0.9. C is disjoint.
+    features = pd.DataFrame(
+        [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        ],
+        index=["A", "B", "C"],
+        columns=columns,
+    )
+    assert feature_jaccard(features, "A", "B") == pytest.approx(0.9)
+    pvals = pd.DataFrame({"feature": ["A", "B", "C"], "p_value": [1e-6, 1e-5, 1e-4]})
+    groups = group_features_by_jaccard(
+        features, ["A", "B", "C"], feature_wilcox_pvals=pvals, jaccard_threshold=0.9
+    )
+    assert groups[0] == ["A", "B"]
+    assert groups[1] == ["C"]

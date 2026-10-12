@@ -1,7 +1,7 @@
 """Biomarker discovery pipeline.
 
 Exposes the main callable that the CLI uses: z-score the target dependency column,
-search for candidate feature sets (Wilcoxon + hypergeometric grouping), then grow
+search for candidate feature sets (Wilcoxon + Jaccard grouping), then grow
 AND and OR ``FeatureNode`` trees from the same root markers. See
 ``run_prediction_for_biomarker_given_target_dataset``.
 """
@@ -23,21 +23,19 @@ from features import (
     debug_print_top_wilcoxon_features,
     expanded_feature_labels,
     feature_is_inverse,
-    generaate_overlap_matrix,
     get_target_df,
-    group_features_by_pvalue_v2,
+    group_features_by_jaccard,
     materialize_inverse_features,
     restrict_features_to_celllines,
     return_possible_features,
-    run_hypergeom_tests,
 )
-from permutation import permutation_cutoffs_from_frames
+from permutation import _limit_blas_threads, clear_cutoff_cache, permutation_cutoffs_from_frames
 
 
 def _limit_next_tree_subsets(cur_list_of_lists, filtered_feature_set: pd.DataFrame, max_subsets: int):
     """Keep at most ``max_subsets`` groups, ranked by best (min) Wilcoxon p in each group.
 
-    ``max_subsets <= 0`` means no limit (all groups from ``group_features_by_pvalue_v2``).
+    ``max_subsets <= 0`` means no limit (all Jaccard groups).
     """
     if not cur_list_of_lists or max_subsets <= 0:
         return cur_list_of_lists
@@ -57,18 +55,20 @@ def _limit_next_tree_subsets(cur_list_of_lists, filtered_feature_set: pd.DataFra
     return ordered[:max_subsets]
 
 
-def determine_best_biomrker_sets(
+def determine_best_biomarker_sets(
     fdf,
     tdf,
     filter_score_column,
     wilcox_score_column,
     wilcox_pval_cutoff=0.0001,
     wilcox_qval_cutoff=0.01,
-    geom_pval_cutoff=0.0000000001,
     min_effect_size=-0.2,
     direction="sensitivity",
+    min_group_count=3,
+    jaccard_threshold=0.9,
+    effect_vs_wt=False,
 ):
-    """Run feature pipeline: Wilcoxon filter -> overlap matrix -> hypergeom -> group."""
+    """Run feature pipeline: Wilcoxon filter -> Jaccard group."""
     filtered_feature_set = return_possible_features(
         fdf,
         tdf,
@@ -78,28 +78,23 @@ def determine_best_biomrker_sets(
         qval_cutoff=wilcox_qval_cutoff,
         min_effect_size=min_effect_size,
         direction=direction,
+        effect_vs_wt=effect_vs_wt,
+        min_group_count=min_group_count,
     )
     if filtered_feature_set.empty:
         return [], filtered_feature_set
 
+    filtered_feature_set = _keep_smaller_direction_pair(filtered_feature_set, fdf)
+    if filtered_feature_set.empty:
+        return [], filtered_feature_set
     fdf = materialize_inverse_features(fdf, filtered_feature_set["feature"].tolist())
-    overlaps = generaate_overlap_matrix(
+    groups = group_features_by_jaccard(
         fdf,
         filtered_feature_set["feature"].values.tolist(),
-        filtered_feature_set["feature"].values.tolist(),
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        overlaping_feature_pvals = run_hypergeom_tests(fdf, overlaps)
-    return group_features_by_pvalue_v2(
-        overlaping_feature_pvals,
-        feature_list=filtered_feature_set["feature"].values.tolist(),
-        pvalue_threshold=geom_pval_cutoff,
-        fdf=fdf,
-        tdf=tdf,
-        score_column=wilcox_score_column,
         feature_wilcox_pvals=filtered_feature_set,
-    ), filtered_feature_set
+        jaccard_threshold=jaccard_threshold,
+    )
+    return groups, filtered_feature_set
 
 
 def prepare_prediction_inputs(
@@ -175,6 +170,37 @@ def _cell_lines_for_logic(tdf, fdf, cur_features, or_flag):
     )
 
 
+def _node_from_group(group, scored_features, sens_res):
+    """Build a FeatureNode with discovery stats from the best-p feature in the group."""
+    cur_feature_string = ";".join(group)
+    best_name = group[0]
+    best_p = None
+    best_effect = None
+    n_mut = None
+    n_ref = None
+    if scored_features is not None and not scored_features.empty:
+        rows = scored_features.loc[scored_features["feature"].astype(str).isin(group)]
+        if not rows.empty:
+            top = rows.sort_values("p_value", ascending=True).iloc[0]
+            best_name = str(top["feature"])
+            best_p = float(top["p_value"])
+            if "effect_size" in top.index and pd.notna(top["effect_size"]):
+                best_effect = float(top["effect_size"])
+            if "n_mutant" in top.index and pd.notna(top["n_mutant"]):
+                n_mut = int(top["n_mutant"])
+            if "n_reference" in top.index and pd.notna(top["n_reference"]):
+                n_ref = int(top["n_reference"])
+    return FeatureNode(
+        cur_feature_string,
+        sens_res=sens_res,
+        discovery_p=best_p,
+        discovery_effect=best_effect,
+        discovery_feature=best_name,
+        n_mutant=n_mut,
+        n_reference=n_ref,
+    )
+
+
 def _grow_tree_from_root_groups(
     *,
     target,
@@ -186,7 +212,6 @@ def _grow_tree_from_root_groups(
     cur_filter_score_column,
     cur_wilcox_score_column,
     min_feature_count,
-    min_geom_pval,
     max_next_feature_subsets,
     n_permutations,
     n_jobs,
@@ -196,6 +221,8 @@ def _grow_tree_from_root_groups(
     strong_min_effect_size,
     child_min_effect_size,
     child_resistance_min_effect_size,
+    min_group_count,
+    jaccard_threshold,
 ):
     """Attach shared root groups and grow later steps under one AND or OR rule."""
     root_features = FeatureNode(target)
@@ -211,6 +238,25 @@ def _grow_tree_from_root_groups(
         same_res_es = child_resistance_min_effect_size
         same_vs_wt = False
     print(f"Growing {logic} tree from shared root markers...")
+    shared_kwargs = dict(
+        source_fdf=source_fdf,
+        tdf=target_df,
+        filter_score_column=cur_filter_score_column,
+        wilcox_score_column=cur_wilcox_score_column,
+        min_feature_count=min_feature_count,
+        or_flag=or_flag,
+        max_next_feature_subsets=max_next_feature_subsets,
+        n_permutations=n_permutations,
+        n_jobs=n_jobs,
+        percentile=percentile,
+        resistance_min_effect_size=resistance_min_effect_size,
+        strong_min_effect_size=strong_min_effect_size,
+        child_min_effect_size=child_min_effect_size,
+        child_resistance_min_effect_size=child_resistance_min_effect_size,
+        sensitivity_min_effect_size=min_effect_size,
+        min_group_count=min_group_count,
+        jaccard_threshold=jaccard_threshold,
+    )
     for sens_res, list_of_list_features, scored_features in root_passes:
         excluded = []
         for cur_features in list_of_list_features:
@@ -218,91 +264,48 @@ def _grow_tree_from_root_groups(
             excluded.extend(cur_features)
             cur_feature_string = ";".join(cur_features)
             node_label = "resistant" if sens_res == "resistant" else "sensitive"
-            cur_feature_node = FeatureNode(cur_feature_string, sens_res=node_label)
+            cur_feature_node = _node_from_group(cur_features, scored_features, node_label)
             root_features.add_child(cur_feature_node)
             cur_cl = _cell_lines_for_logic(target_df, filtered_features_df, cur_features, or_flag)
+            if len(cur_cl) < min_feature_count:
+                continue
 
             if sens_res == "resistant":
                 add_next_best_features_to_tree(
-                    source_fdf=source_fdf,
-                    excluded_features=list(cur_features),
-                    tdf=target_df,
+                    excluded_features=list(excluded),
                     cl_list=cur_cl,
                     cur_node=cur_feature_node,
-                    filter_score_column=cur_filter_score_column,
-                    wilcox_score_column=cur_wilcox_score_column,
-                    min_feature_count=min_feature_count,
-                    min_geom_pval=min_geom_pval,
                     parent_feature=cur_feature_string,
-                    or_flag=or_flag,
-                    max_next_feature_subsets=max_next_feature_subsets,
-                    n_permutations=n_permutations,
-                    n_jobs=n_jobs,
-                    percentile=percentile,
                     min_effect_size=same_res_es,
-                    resistance_min_effect_size=resistance_min_effect_size,
-                    strong_min_effect_size=strong_min_effect_size,
-                    child_min_effect_size=child_min_effect_size,
-                    child_resistance_min_effect_size=child_resistance_min_effect_size,
                     direction="resistance",
-                    sensitivity_min_effect_size=min_effect_size,
                     path_features=list(cur_features),
                     effect_vs_wt=same_vs_wt,
+                    **shared_kwargs,
                 )
                 continue
 
             add_next_best_features_to_tree(
-                source_fdf=source_fdf,
                 excluded_features=list(excluded),
-                tdf=target_df,
                 cl_list=cur_cl,
                 cur_node=cur_feature_node,
-                filter_score_column=cur_filter_score_column,
-                wilcox_score_column=cur_wilcox_score_column,
-                min_feature_count=min_feature_count,
-                min_geom_pval=min_geom_pval,
                 parent_feature=cur_feature_string,
-                or_flag=or_flag,
-                max_next_feature_subsets=max_next_feature_subsets,
-                n_permutations=n_permutations,
-                n_jobs=n_jobs,
-                percentile=percentile,
                 min_effect_size=same_sens_es,
-                resistance_min_effect_size=resistance_min_effect_size,
-                strong_min_effect_size=strong_min_effect_size,
-                child_min_effect_size=child_min_effect_size,
-                child_resistance_min_effect_size=child_resistance_min_effect_size,
                 direction="sensitivity",
-                sensitivity_min_effect_size=min_effect_size,
                 path_features=list(cur_features),
                 effect_vs_wt=same_vs_wt,
+                **shared_kwargs,
             )
             if _group_effect(cur_features, scored_features) <= strong_min_effect_size:
                 add_next_best_features_to_tree(
-                    source_fdf=source_fdf,
-                    excluded_features=list(cur_features),
-                    tdf=target_df,
+                    excluded_features=list(excluded),
                     cl_list=cur_cl,
                     cur_node=cur_feature_node,
-                    filter_score_column=cur_filter_score_column,
-                    wilcox_score_column=cur_wilcox_score_column,
-                    min_feature_count=min_feature_count,
-                    min_geom_pval=min_geom_pval,
                     parent_feature=cur_feature_string,
-                    or_flag=or_flag,
-                    max_next_feature_subsets=max_next_feature_subsets,
-                    n_permutations=n_permutations,
-                    n_jobs=n_jobs,
-                    percentile=percentile,
                     min_effect_size=resistance_min_effect_size,
-                    resistance_min_effect_size=resistance_min_effect_size,
-                    strong_min_effect_size=strong_min_effect_size,
-                    child_min_effect_size=child_min_effect_size,
-                    child_resistance_min_effect_size=child_resistance_min_effect_size,
                     direction="resistance",
-                    sensitivity_min_effect_size=min_effect_size,
                     path_features=list(cur_features),
                     effect_vs_wt=False,
+                    **shared_kwargs,
                 )
     return root_features
 
@@ -314,9 +317,6 @@ def run_prediction_for_biomarker_given_target_dataset(
     cts=None,
     background_options=None,
     min_feature_count=3,
-    min_wilcox_pval=0.001,
-    min_wilcox_qval=0.01,
-    min_geom_pval=0.0000000001,
     oncotree_column="oncotreelineage",
     cohort_csv_path=None,
     cohort_celllines_override=None,
@@ -331,6 +331,8 @@ def run_prediction_for_biomarker_given_target_dataset(
     strong_min_effect_size=-0.2,
     child_min_effect_size=-0.1,
     child_resistance_min_effect_size=0.1,
+    min_group_count=3,
+    jaccard_threshold=0.9,
 ):
     """Run full biomarker prediction pipeline for target/dataset.
 
@@ -338,6 +340,10 @@ def run_prediction_for_biomarker_given_target_dataset(
     first-level markers. Returns ``(and_tree, or_tree, target_df)``. Either tree is
     ``None`` when no root feature groups are found.
     """
+    clear_cutoff_cache()
+    if n_jobs is not None and int(n_jobs) > 1:
+        _limit_blas_threads()
+
     filtered_features_df, target_df, cur_filter_score_column, cur_wilcox_score_column = prepare_prediction_inputs(
         target,
         dataset,
@@ -351,7 +357,7 @@ def run_prediction_for_biomarker_given_target_dataset(
         target_df=target_df,
     )
     if debug_wilcox_top_n is not None:
-        print("[debug] Initial cohort Wilcoxon ranking (same inputs as first determine_best_biomrker_sets step):")
+        print("[debug] Initial cohort Wilcoxon ranking (same inputs as first determine_best_biomarker_sets step):")
         debug_print_top_wilcoxon_features(
             filtered_features_df,
             target_df,
@@ -361,15 +367,34 @@ def run_prediction_for_biomarker_given_target_dataset(
             min_effect_size=min_effect_size,
         )
 
+    print(
+        f"Root sensitivity shuffles on {filtered_features_df.shape[1]} cell lines and "
+        f"{filtered_features_df.shape[0]} features ({n_permutations} permutations)..."
+    )
+    sensitivity_cutoffs = permutation_cutoffs_from_frames(
+        tdf=target_df,
+        fdf=filtered_features_df,
+        filter_score_column=cur_filter_score_column,
+        wilcox_score_column=cur_wilcox_score_column,
+        n_permutations=n_permutations,
+        percentile=percentile,
+        n_jobs=n_jobs,
+        min_effect_size=min_effect_size,
+        direction="sensitivity",
+        min_group_count=min_group_count,
+    )
+    print(f"Sensitivity p-value cutoff: {sensitivity_cutoffs['pvalue_cutoff']}")
+    print(f"Sensitivity q-value cutoff: {sensitivity_cutoffs['qvalue_cutoff']}")
     sens_scored = return_possible_features(
         filtered_features_df,
         target_df,
         filter_score_column=cur_filter_score_column,
         wilcox_score_column=cur_wilcox_score_column,
-        wilcox_cutoff=min_wilcox_pval,
-        qval_cutoff=min_wilcox_qval,
+        wilcox_cutoff=sensitivity_cutoffs["pvalue_cutoff"],
+        qval_cutoff=sensitivity_cutoffs["qvalue_cutoff"],
         min_effect_size=min_effect_size,
         direction="sensitivity",
+        min_group_count=min_group_count,
     )
     print(
         f"Root resistance shuffles on {filtered_features_df.shape[1]} cell lines and "
@@ -385,6 +410,7 @@ def run_prediction_for_biomarker_given_target_dataset(
         n_jobs=n_jobs,
         min_effect_size=resistance_min_effect_size,
         direction="resistance",
+        min_group_count=min_group_count,
     )
     print(f"Resistance p-value cutoff: {resistance_cutoffs['pvalue_cutoff']}")
     print(f"Resistance q-value cutoff: {resistance_cutoffs['qvalue_cutoff']}")
@@ -397,13 +423,14 @@ def run_prediction_for_biomarker_given_target_dataset(
         qval_cutoff=resistance_cutoffs["qvalue_cutoff"],
         min_effect_size=resistance_min_effect_size,
         direction="resistance",
+        min_group_count=min_group_count,
     )
     sens_scored, res_scored = _keep_smaller_root_pair(sens_scored, res_scored, filtered_features_df)
     sens_groups, filtered_features_df = _group_scored_features(
-        filtered_features_df, target_df, sens_scored, min_geom_pval, cur_wilcox_score_column
+        filtered_features_df, sens_scored, jaccard_threshold=jaccard_threshold
     )
     res_groups, filtered_features_df = _group_scored_features(
-        filtered_features_df, target_df, res_scored, min_geom_pval, cur_wilcox_score_column
+        filtered_features_df, res_scored, jaccard_threshold=jaccard_threshold
     )
 
     if not sens_groups and not res_groups:
@@ -422,7 +449,6 @@ def run_prediction_for_biomarker_given_target_dataset(
         cur_filter_score_column=cur_filter_score_column,
         cur_wilcox_score_column=cur_wilcox_score_column,
         min_feature_count=min_feature_count,
-        min_geom_pval=min_geom_pval,
         max_next_feature_subsets=max_next_feature_subsets,
         n_permutations=n_permutations,
         n_jobs=n_jobs,
@@ -432,6 +458,8 @@ def run_prediction_for_biomarker_given_target_dataset(
         strong_min_effect_size=strong_min_effect_size,
         child_min_effect_size=child_min_effect_size,
         child_resistance_min_effect_size=child_resistance_min_effect_size,
+        min_group_count=min_group_count,
+        jaccard_threshold=jaccard_threshold,
     )
     and_tree = _grow_tree_from_root_groups(or_flag=False, **grow_kwargs)
     or_tree = _grow_tree_from_root_groups(or_flag=True, **grow_kwargs)
@@ -496,27 +524,54 @@ def _keep_smaller_root_pair(sens_df: pd.DataFrame, res_df: pd.DataFrame, fdf: pd
     return sens_df, res_df
 
 
-def _group_scored_features(fdf, tdf, scored, geom_pval_cutoff, wilcox_score_column):
-    """Overlap-group one scored feature table. Returns groups and the materialized matrix."""
+def _keep_smaller_direction_pair(scored_df: pd.DataFrame, fdf: pd.DataFrame) -> pd.DataFrame:
+    """Within one scored table, drop the larger of a feature / inverse pair."""
+    if scored_df is None or scored_df.empty:
+        return scored_df
+    by_base: dict[str, list[str]] = {}
+    for name in scored_df["feature"].astype(str):
+        by_base.setdefault(base_feature_name(name), []).append(name)
+    drop: set[str] = set()
+    for base, names in by_base.items():
+        forwards = [n for n in names if not feature_is_inverse(n)]
+        inverses = [n for n in names if feature_is_inverse(n)]
+        if not forwards or not inverses:
+            continue
+        for fwd in forwards:
+            for inv in inverses:
+                fwd_n = _selected_cell_count(fwd, fdf)
+                inv_n = _selected_cell_count(inv, fdf)
+                if fwd_n < inv_n:
+                    drop.add(inv)
+                    kept = fwd
+                elif inv_n < fwd_n:
+                    drop.add(fwd)
+                    kept = inv
+                else:
+                    drop.add(inv)
+                    kept = fwd
+                print(
+                    f"Direction pair {base}: keep {kept} "
+                    f"(forward n={fwd_n}, inverse n={inv_n})"
+                )
+    if drop:
+        scored_df = scored_df.loc[~scored_df["feature"].astype(str).isin(drop)].copy()
+    return scored_df
+
+
+def _group_scored_features(fdf, scored, jaccard_threshold=0.9):
+    """Jaccard-group one scored feature table. Returns groups and the materialized matrix."""
     if scored is None or scored.empty:
         return [], fdf
+    scored = _keep_smaller_direction_pair(scored, fdf)
+    if scored.empty:
+        return [], fdf
     fdf = materialize_inverse_features(fdf, scored["feature"].tolist())
-    overlaps = generaate_overlap_matrix(
+    groups = group_features_by_jaccard(
         fdf,
         scored["feature"].values.tolist(),
-        scored["feature"].values.tolist(),
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        overlapping = run_hypergeom_tests(fdf, overlaps)
-    groups = group_features_by_pvalue_v2(
-        overlapping,
-        feature_list=scored["feature"].values.tolist(),
-        pvalue_threshold=geom_pval_cutoff,
-        fdf=fdf,
-        tdf=tdf,
-        score_column=wilcox_score_column,
         feature_wilcox_pvals=scored,
+        jaccard_threshold=jaccard_threshold,
     )
     return groups, fdf
 
@@ -533,11 +588,6 @@ def _group_effect(group, feature_set: pd.DataFrame) -> float:
     return min(values) if values else 0.0
 
 
-def _feature_labels(names) -> list[str]:
-    """Feature names, their base rows, and pieces joined when rows were merged."""
-    return expanded_feature_labels(names)
-
-
 def add_next_best_features_to_tree(
     source_fdf=None,
     excluded_features=None,
@@ -547,7 +597,6 @@ def add_next_best_features_to_tree(
     filter_score_column=None,
     wilcox_score_column=None,
     min_feature_count=3,
-    min_geom_pval=0.0000000001,
     parent_feature=None,
     or_flag=True,
     max_next_feature_subsets=3,
@@ -563,20 +612,20 @@ def add_next_best_features_to_tree(
     sensitivity_min_effect_size=None,
     path_features=None,
     effect_vs_wt=False,
+    min_group_count=3,
+    jaccard_threshold=0.9,
 ):
     """Recursively add best feature groups as children to cur_node."""
     if sensitivity_min_effect_size is None:
         sensitivity_min_effect_size = min_effect_size if direction == "sensitivity" else -0.2
+    if not cl_list or len(cl_list) < min_feature_count:
+        return
     path_features = list(path_features if path_features is not None else (excluded_features or []))
-    blocked = _feature_labels(excluded_features or [])
+    blocked = expanded_feature_labels(excluded_features or [])
     available = source_fdf.drop(blocked, errors="ignore")
     cur_fdf = restrict_features_to_celllines(available, cl_list)
     cur_tdf = tdf[tdf["cellline"].isin(cur_fdf.columns)].copy()
-    if cur_fdf.empty:
-        return
-    if cur_tdf.empty:
-        return
-    if cur_fdf.shape[1] < min_feature_count:
+    if cur_fdf.empty or cur_tdf.empty or cur_fdf.shape[1] < min_feature_count:
         return
 
     print(
@@ -594,45 +643,29 @@ def add_next_best_features_to_tree(
         min_effect_size=min_effect_size,
         direction=direction,
         effect_vs_wt=effect_vs_wt,
+        min_group_count=min_group_count,
     )
     min_wilcox_pval = cutoffs["pvalue_cutoff"]
     min_wilcox_qval = cutoffs["qvalue_cutoff"]
     print(f"P-value cutoff: {min_wilcox_pval}")
     print(f"Q-value cutoff: {min_wilcox_qval}")
 
-    filtered_feature_set = return_possible_features(
+    cur_list_of_lists, filtered_feature_set = determine_best_biomarker_sets(
         cur_fdf,
         cur_tdf,
         filter_score_column=filter_score_column,
         wilcox_score_column=wilcox_score_column,
-        wilcox_cutoff=min_wilcox_pval,
-        qval_cutoff=min_wilcox_qval,
+        wilcox_pval_cutoff=min_wilcox_pval,
+        wilcox_qval_cutoff=min_wilcox_qval,
         min_effect_size=min_effect_size,
         direction=direction,
+        min_group_count=min_group_count,
+        jaccard_threshold=jaccard_threshold,
         effect_vs_wt=effect_vs_wt,
     )
-    if filtered_feature_set.empty:
+    if not cur_list_of_lists:
         return
 
-    cur_fdf = materialize_inverse_features(cur_fdf, filtered_feature_set["feature"].tolist())
-    overlaps = generaate_overlap_matrix(
-        cur_fdf,
-        filtered_feature_set["feature"].values.tolist(),
-        filtered_feature_set["feature"].values.tolist(),
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        overlaping_feature_pvals = run_hypergeom_tests(cur_fdf, overlaps)
-
-    cur_list_of_lists = group_features_by_pvalue_v2(
-        overlaping_feature_pvals,
-        feature_list=filtered_feature_set["feature"].values.tolist(),
-        pvalue_threshold=min_geom_pval,
-        fdf=cur_fdf,
-        tdf=cur_tdf,
-        score_column=wilcox_score_column,
-        feature_wilcox_pvals=filtered_feature_set,
-    )
     cur_list_of_lists = _limit_next_tree_subsets(
         cur_list_of_lists, filtered_feature_set, max_next_feature_subsets
     )
@@ -640,6 +673,25 @@ def add_next_best_features_to_tree(
     cur_fdf = materialize_inverse_features(cur_fdf, grouped_names)
 
     excluded = list(excluded_features or [])
+    shared_child_kwargs = dict(
+        source_fdf=source_fdf,
+        tdf=cur_tdf,
+        filter_score_column=filter_score_column,
+        wilcox_score_column=wilcox_score_column,
+        min_feature_count=min_feature_count,
+        or_flag=or_flag,
+        max_next_feature_subsets=max_next_feature_subsets,
+        n_permutations=n_permutations,
+        n_jobs=n_jobs,
+        percentile=percentile,
+        resistance_min_effect_size=resistance_min_effect_size,
+        strong_min_effect_size=strong_min_effect_size,
+        child_min_effect_size=child_min_effect_size,
+        child_resistance_min_effect_size=child_resistance_min_effect_size,
+        sensitivity_min_effect_size=sensitivity_min_effect_size,
+        min_group_count=min_group_count,
+        jaccard_threshold=jaccard_threshold,
+    )
     for cur_features in cur_list_of_lists:
         # Sibling k cannot see itself, earlier siblings, or features already excluded by the parent.
         excluded.extend(cur_features)
@@ -647,7 +699,7 @@ def add_next_best_features_to_tree(
         print("Parent - " + parent_feature)
         print("Child - " + cur_feature_string)
         child_label = "resistant" if direction == "resistance" else "sensitive"
-        cur_feature_node = FeatureNode(cur_feature_string, sens_res=child_label)
+        cur_feature_node = _node_from_group(cur_features, filtered_feature_set, child_label)
         cur_node.add_child(cur_feature_node)
         if or_flag:
             cur_cl_list = list(
@@ -661,6 +713,8 @@ def add_next_best_features_to_tree(
                     set(cur_fdf.columns[cur_fdf.loc[cur_features].max(axis=0) > 0].values.tolist())
                 )
             )
+        if len(cur_cl_list) < min_feature_count:
+            continue
 
         child_path = list(path_features) + list(cur_features)
         child_effect = _group_effect(cur_features, filtered_feature_set)
@@ -680,60 +734,30 @@ def add_next_best_features_to_tree(
             next_switch_res_vs_wt = False
         if direction != "resistance":
             add_next_best_features_to_tree(
-                source_fdf=source_fdf,
                 excluded_features=list(excluded),
-                tdf=cur_tdf,
                 cl_list=cur_cl_list,
                 cur_node=cur_feature_node,
-                filter_score_column=filter_score_column,
-                wilcox_score_column=wilcox_score_column,
-                min_feature_count=min_feature_count,
-                min_geom_pval=min_geom_pval,
                 parent_feature=cur_feature_string,
-                or_flag=or_flag,
-                max_next_feature_subsets=max_next_feature_subsets,
-                n_permutations=n_permutations,
-                n_jobs=n_jobs,
-                percentile=percentile,
                 min_effect_size=next_sens_es,
-                resistance_min_effect_size=resistance_min_effect_size,
-                strong_min_effect_size=strong_min_effect_size,
-                child_min_effect_size=child_min_effect_size,
-                child_resistance_min_effect_size=child_resistance_min_effect_size,
                 direction="sensitivity",
-                sensitivity_min_effect_size=sensitivity_min_effect_size,
                 path_features=child_path,
                 effect_vs_wt=next_sens_vs_wt,
+                **shared_child_kwargs,
             )
         resistance_allowed = direction == "resistance" or child_effect <= strong_min_effect_size
         if resistance_allowed:
             add_next_best_features_to_tree(
-                source_fdf=source_fdf,
-                excluded_features=child_path,
-                tdf=cur_tdf,
+                excluded_features=list(excluded),
                 cl_list=cur_cl_list,
                 cur_node=cur_feature_node,
-                filter_score_column=filter_score_column,
-                wilcox_score_column=wilcox_score_column,
-                min_feature_count=min_feature_count,
-                min_geom_pval=min_geom_pval,
                 parent_feature=cur_feature_string,
-                or_flag=or_flag,
-                max_next_feature_subsets=max_next_feature_subsets,
-                n_permutations=n_permutations,
-                n_jobs=n_jobs,
-                percentile=percentile,
                 min_effect_size=(
                     next_same_res_es if direction == "resistance" else next_switch_res_es
                 ),
-                resistance_min_effect_size=resistance_min_effect_size,
-                strong_min_effect_size=strong_min_effect_size,
-                child_min_effect_size=child_min_effect_size,
-                child_resistance_min_effect_size=child_resistance_min_effect_size,
                 direction="resistance",
-                sensitivity_min_effect_size=sensitivity_min_effect_size,
                 path_features=child_path,
                 effect_vs_wt=(
                     next_same_res_vs_wt if direction == "resistance" else next_switch_res_vs_wt
                 ),
+                **shared_child_kwargs,
             )

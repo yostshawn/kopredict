@@ -5,7 +5,6 @@ Publication workbooks are metadata/additional_datasets_to_download.csv.
 Signed DepMap links live in metadata/20260920_DepMap_available_downloads.csv.
 """
 
-from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 
@@ -28,32 +27,32 @@ def metadata_dir() -> Path:
 
 def _read_metadata_csv(name: str) -> pd.DataFrame:
     path = metadata_dir() / name
-    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-    frame.columns = [str(column).strip() for column in frame.columns]
-    return frame
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df.columns = [str(column).strip() for column in df.columns]
+    return df
 
 
 def load_depmap_files() -> pd.DataFrame:
     """Rows of release and filename to pull from the DepMap download catalog."""
-    frame = _read_metadata_csv(DEPMAP_FILES_CSV)
+    df = _read_metadata_csv(DEPMAP_FILES_CSV)
     for column in ("release", "filename"):
-        if column not in frame.columns:
+        if column not in df.columns:
             raise ValueError(f"metadata/{DEPMAP_FILES_CSV} is missing column {column!r}")
-    return frame
+    return df
 
 
 def load_additional() -> pd.DataFrame:
     """Publication files that are not rows in the DepMap catalog."""
-    frame = _read_metadata_csv(ADDITIONAL_DATASETS_CSV)
+    df = _read_metadata_csv(ADDITIONAL_DATASETS_CSV)
     for column in ("id", "local_filename", "url", "citation", "download"):
-        if column not in frame.columns:
+        if column not in df.columns:
             raise ValueError(f"metadata/{ADDITIONAL_DATASETS_CSV} is missing column {column!r}")
-    return frame
+    return df
 
 
 def additional_record(record_id: str) -> pd.Series:
-    frame = load_additional()
-    hit = frame[frame["id"] == record_id]
+    df = load_additional()
+    hit = df[df["id"] == record_id]
     if hit.empty:
         raise KeyError(f"metadata/{ADDITIONAL_DATASETS_CSV} has no id {record_id!r}")
     return hit.iloc[0]

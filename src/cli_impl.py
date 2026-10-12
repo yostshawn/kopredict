@@ -37,7 +37,7 @@ from database import (
 )
 from features import get_target_df
 from local_data import get_data_dir
-from permutation import estimate_significant_pvalue_cutoff
+from permutation import _limit_blas_threads
 from pipeline import run_prediction_for_biomarker_given_target_dataset
 from plotting import create_boxplot, summary_csv_path
 from prepare import FEATURES_FILENAME
@@ -182,6 +182,8 @@ def load_run_config(path: Path | None) -> SimpleNamespace:
         min_essential_cell_lines=int(loaded.get("min_essential_cell_lines", 1)),
         essentiality_threshold=None if _blank(loaded.get("essentiality_threshold")) else float(loaded.get("essentiality_threshold")),
         max_next_feature_subsets=int(loaded.get("max_next_feature_subsets", 3)),
+        min_group_count=int(loaded.get("min_group_count", 3)),
+        jaccard_threshold=float(loaded.get("jaccard_threshold", 0.9)),
         keep_expression_features=bool(loaded.get("keep_expression_features", False)),
         keep_proteiomic_features=bool(loaded.get("keep_proteiomic_features", False)),
         config_source=str(source),
@@ -306,16 +308,18 @@ def _run_single_cohort_analysis(
     min_essential_cell_lines,
     essentiality_threshold,
     max_next_feature_subsets,
+    min_group_count=3,
+    jaccard_threshold=0.9,
     write_plots=True,
     summary_cancertype=None,
     summary_oncotree_column=None,
 ):
-    """Permutation null, z-score + feature search, and optional boxplots for one cohort.
+    """Cohort overlap checks, biomarker search, and optional boxplots for one cohort.
 
     ``cell_raw`` lists model cell lines for the cohort; they are intersected with both
     feature matrix columns and target dependency rows. Fails the biomarker search with a
     summary-only path if overlap or essential-line counts (see ``min_essential_cell_lines``)
-    are too small.
+    are too small. Root permutation cutoffs are estimated once inside the pipeline.
 
     Returns ``(and_tree, or_tree, target_df_after_pipeline, summary_rows)``.
     """
@@ -373,24 +377,8 @@ def _run_single_cohort_analysis(
         )
         return None, None, target_df_filtered, summary_rows
 
-    print("Estimating significant p-value cutoffs...")
-    result = estimate_significant_pvalue_cutoff(
-        target=cur_target,
-        dataset=cur_dataset,
-        fdf=final_features_df,
-        cts=cur_cts,
-        background_options=group_options,
-        n_permutations=n_permutations,
-        n_jobs=n_jobs,
-        percentile=null_percentile,
-        min_effect_size=min_effect_size,
-        oncotree_column=oncotree_column,
-        cohort_csv_path=cohort_csv_path,
-        cohort_celllines_override=cohort_celllines_override,
-        target_df=target_df,
-    )
-    print(f"P-value cutoff: {result['pvalue_cutoff']}")
-    print(f"Q-value cutoff: {result['qvalue_cutoff']}")
+    if n_jobs is not None and int(n_jobs) > 1:
+        _limit_blas_threads()
 
     print("Running biomarker prediction pipeline...")
     and_tree, or_tree, target_df_pipeline = run_prediction_for_biomarker_given_target_dataset(
@@ -399,9 +387,6 @@ def _run_single_cohort_analysis(
         fdf=final_features_df,
         cts=cur_cts,
         background_options=group_options,
-        min_wilcox_pval=result["pvalue_cutoff"],
-        min_wilcox_qval=result["qvalue_cutoff"],
-        min_geom_pval=0.000000000000001,
         oncotree_column=oncotree_column,
         cohort_csv_path=cohort_csv_path,
         cohort_celllines_override=cohort_celllines_override,
@@ -416,6 +401,8 @@ def _run_single_cohort_analysis(
         strong_min_effect_size=strong_min_effect_size,
         child_min_effect_size=child_min_effect_size,
         child_resistance_min_effect_size=child_resistance_min_effect_size,
+        min_group_count=min_group_count,
+        jaccard_threshold=jaccard_threshold,
     )
 
     summary_rows: list[dict] = []
@@ -573,6 +560,8 @@ def main(argv: list[str] | None = None):
                 min_essential_cell_lines=min_essential_cell_lines,
                 essentiality_threshold=essentiality_threshold,
                 max_next_feature_subsets=max_next_feature_subsets,
+                min_group_count=args.min_group_count,
+                jaccard_threshold=args.jaccard_threshold,
                 summary_cancertype=display_name,
                 summary_oncotree_column=col,
             )
@@ -647,6 +636,8 @@ def main(argv: list[str] | None = None):
         min_essential_cell_lines=min_essential_cell_lines,
         essentiality_threshold=essentiality_threshold,
         max_next_feature_subsets=max_next_feature_subsets,
+        min_group_count=args.min_group_count,
+        jaccard_threshold=args.jaccard_threshold,
         summary_cancertype=";".join(cur_cts),
         summary_oncotree_column=args.oncotree_column,
     )

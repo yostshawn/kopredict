@@ -11,7 +11,7 @@ import scipy.stats as stats
 import pyoncoprint
 from matplotlib.backends.backend_pdf import PdfPages
 
-from features import rows_for_block
+from features import discovery_step_masks, rows_for_block
 from utils import sig_figs
 
 
@@ -98,51 +98,44 @@ def create_boxplot(
             plot_data = []
             p_values = {}
             logic_map = {}
+            blocks = [node.feature for node in feature_nodes]
 
-            if logic_type.upper() == "AND":
-                cumulative_mask = pd.Series(True, index=fdf_plot.columns)
-            else:
-                cumulative_mask = pd.Series(False, index=fdf_plot.columns)
-
-            first_block_feats = feature_nodes[0].feature
-            wt_mask = ~rows_for_block(fdf_plot, first_block_feats).fillna(0).any()
-            wt_series = tdf.loc[tdf["cellline"].isin(fdf_plot.columns[wt_mask]), ko_datatype]
+            # Baseline WT uses the discovery reference for step 0 (full cohort without root).
+            root_mut, root_ref = discovery_step_masks(fdf_plot, blocks, logic_type, 0)
+            wt_series = tdf.loc[tdf["cellline"].isin(fdf_plot.columns[root_ref]), ko_datatype]
             n_wt = int(len(wt_series))
             wt_group_label = f"WT (n={n_wt})"
             for val in wt_series:
                 plot_data.append({"Group": wt_group_label, "Value": val, "Kind": "WT"})
             logic_map[wt_group_label] = f"Baseline (WT), n={n_wt} cell lines"
-            previous_mask = None
 
             for step_idx, node in enumerate(feature_nodes):
                 block_string = node.feature
                 is_resistant = getattr(node, "sens_res", "sensitive") == "resistant"
-                block_mask = rows_for_block(fdf_plot, block_string).fillna(0).any()
-                if logic_type.upper() == "AND":
-                    cumulative_mask = cumulative_mask & block_mask
-                else:
-                    cumulative_mask = cumulative_mask | block_mask
-                group_celllines = fdf_plot.columns[cumulative_mask]
-                group_series = tdf.loc[tdf["cellline"].isin(group_celllines), ko_datatype]
+                mut_mask, ref_mask = discovery_step_masks(fdf_plot, blocks, logic_type, step_idx)
+                group_series = tdf.loc[tdf["cellline"].isin(fdf_plot.columns[mut_mask]), ko_datatype]
                 features = [part.strip() for part in str(block_string).split(";") if part.strip()]
-                short_label = f"Step {step_idx + 1}\n(n={len(group_series)})"
+                n_mut = (
+                    int(node.n_mutant)
+                    if getattr(node, "n_mutant", None) is not None
+                    else int(len(group_series))
+                )
+                short_label = f"Step {step_idx + 1}\n(n={n_mut})"
                 step_key = f"Step {step_idx + 1}"
-                logic_map[step_key] = " | ".join(features)
+                best = getattr(node, "discovery_feature", None) or features[0]
+                logic_map[step_key] = " | ".join(features) + f"\n    discovery={best}"
                 kind = "resistant" if is_resistant else "sensitive"
                 for val in group_series:
                     plot_data.append({"Group": short_label, "Value": val, "Kind": kind})
-                if is_resistant and previous_mask is not None:
-                    reference = tdf.loc[tdf["cellline"].isin(fdf_plot.columns[previous_mask]), ko_datatype]
+                disc_p = getattr(node, "discovery_p", None)
+                if disc_p is not None and pd.notna(disc_p):
+                    p_values[short_label] = sig_figs(float(disc_p), 3)
+                else:
+                    reference = tdf.loc[tdf["cellline"].isin(fdf_plot.columns[ref_mask]), ko_datatype]
                     if not group_series.empty and not reference.empty:
-                        _, p_val = stats.ranksums(group_series, reference, alternative="greater")
+                        alt = "greater" if is_resistant else "less"
+                        _, p_val = stats.ranksums(group_series, reference, alternative=alt)
                         p_values[short_label] = sig_figs(p_val, 3)
-                elif is_resistant and not group_series.empty and not wt_series.empty:
-                    _, p_val = stats.ranksums(group_series, wt_series, alternative="greater")
-                    p_values[short_label] = sig_figs(p_val, 3)
-                elif not group_series.empty and not wt_series.empty:
-                    _, p_val = stats.ranksums(group_series, wt_series, alternative="less")
-                    p_values[short_label] = sig_figs(p_val, 3)
-                previous_mask = cumulative_mask.copy()
 
             if not plot_data:
                 continue
@@ -176,9 +169,9 @@ def create_boxplot(
                         fontsize=9,
                     )
             legend_info = (
-                f"STEP ADDITIONS (cumulative mask: {logic_type.upper()} between blocks)\n"
+                f"STEP GROUPS (discovery masks: {logic_type.upper()} parent subset)\n"
                 + "Red points: sensitive. Blue points: resistant.\n"
-                + "Resistant p is the upper tail versus the combined parent cell lines.\n"
+                + "p-values are the discovery Wilcoxon stats used for selection.\n"
                 + "-" * 25
                 + "\n"
             )

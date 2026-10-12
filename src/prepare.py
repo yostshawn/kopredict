@@ -17,6 +17,7 @@ from download import DEFAULT_DEPMAP_RELEASE, verify_downloaded_files
 from local_data import clear_load_caches, get_data_dir
 from log import log_to_file, shape
 from sources import additional_record
+from utils import hash_feature_rows
 
 FEATURES_FILENAME = "final_depmap_features_26Q1.parquet.gz"
 HRD_SCORE_CUTOFF = 42
@@ -674,25 +675,13 @@ def _encode_feature_rows(features: pd.DataFrame) -> np.ndarray:
     return encoded
 
 
-def _hash_feature_rows(encoded: np.ndarray) -> np.ndarray:
-    data = np.ascontiguousarray(encoded)
-    pad = (-data.shape[1]) % 8
-    if pad:
-        data = np.pad(data, ((0, 0), (0, pad)), mode="constant")
-    folded = data.view(np.uint64)
-    hashes = np.zeros(data.shape[0], dtype=np.uint64)
-    for column in range(folded.shape[1]):
-        hashes ^= folded[:, column] * np.uint64(0x9E3779B97F4A7C15 + column)
-    return hashes
-
-
 def dedupe_identical_rows(features: pd.DataFrame) -> pd.DataFrame:
     encoded = _encode_feature_rows(features)
     names = features.index.astype(str).tolist()
     columns = features.columns
     del features
     gc.collect()
-    hashes = _hash_feature_rows(encoded)
+    hashes = hash_feature_rows(encoded)
     groups: dict[int, list[int]] = {}
     name_groups: dict[int, list[str]] = {}
     reps: list[int] = []

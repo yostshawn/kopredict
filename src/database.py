@@ -243,14 +243,6 @@ def pull_cell_line_metadata(cl=None, full=False):
     return df[avail].copy()
 
 
-def return_lineages_list():
-    """Return distinct oncotreelineage values from the local models file."""
-    cur_df = local_data.load_cellline_models()
-    if "oncotreelineage" not in cur_df.columns:
-        sys.exit("ERROR: Model file must contain oncotreelineage column.")
-    return cur_df["oncotreelineage"].dropna().unique().tolist()
-
-
 def pull_cell_line_full_genomics(genes=None, celllines=None, full=False, where_clause=""):
     """Load long-format omics from ``OmicsFull_processed.parquet.gz`` (replaces Redshift omics table)."""
     genes = genes or []
@@ -287,66 +279,3 @@ def pull_cell_line_full_genomics(genes=None, celllines=None, full=False, where_c
     ]
     avail = [c for c in columns if c in df.columns]
     return df[avail].copy() if avail else df
-
-
-# --- Drug / PGX (Redshift: s3_pgx_drugs_20240809, s3_pgx_drug_sensitivities_20240809) ---
-# Disabled for local runs; re-enable when PGX parquet sources are wired in.
-#
-# def drugs_given_target(target):
-#     query = "SELECT * FROM s3_pgx_drugs_20240809 WHERE target LIKE '%" + target + "%';"
-#     return run_redshift_query_return_pandas(query)
-#
-# def return_drug_data_given_dataset_and_drug(df):
-#     ...
-
-
-def drugs_given_target(target):
-    raise NotImplementedError(
-        "Drug-target mode is disabled in the local-only build. "
-        "Use dataset 'crispr' or 'rnai'."
-    )
-
-
-def return_drug_data_given_dataset_and_drug(df):
-    raise NotImplementedError(
-        "Drug-target mode is disabled in the local-only build. "
-        "Use dataset 'crispr' or 'rnai'."
-    )
-
-
-def return_unique_values(database="", return_column="", not_null_column=""):
-    """Return distinct values from a column; ``database`` may be a parquet path or omics/models alias."""
-    if not database:
-        return "ERROR: Provide database"
-    if not return_column:
-        return "ERROR: Provide return_column"
-    rc = return_column.lower()
-    db_lower = str(database).lower()
-    path = Path(database)
-    if path.is_file():
-        df = pd.read_parquet(path)
-    elif db_lower in ("omics", "omicsfull", "s3_depmap_all_omics_25q2"):
-        df = local_data.load_omics_full()
-    elif db_lower in ("models", "model", "s3_depmap_cellline_models_25q2", "s3_depmap_cellline_models_24q2"):
-        df = local_data.load_cellline_models()
-    else:
-        return f"ERROR: Unknown database {database!r}. Use a parquet path, 'omics', or 'models'."
-
-    df = local_data.normalize_dataframe_columns(df)
-    if rc not in df.columns:
-        return f"ERROR: Column {return_column!r} not in table (have: {list(df.columns)[:40]} ...)"
-    series = df[rc]
-    if not_null_column:
-        nn = not_null_column.lower()
-        if nn not in df.columns:
-            return f"ERROR: not_null_column {not_null_column!r} not found."
-        series = series[df[nn].notna()]
-    return pd.DataFrame({return_column: series.dropna().unique()})
-
-
-def create_connection():
-    raise RuntimeError("Redshift is disabled; kopredict uses local parquet files under data/.")
-
-
-def run_redshift_query_return_pandas(query):
-    raise RuntimeError("Redshift is disabled; kopredict uses local parquet files under data/.")

@@ -4,6 +4,7 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from cli_impl import load_run_config
 from cohort_summary import build_cohort_summary_rows
@@ -13,8 +14,8 @@ from features import (
     permutation_null_for_seed,
     prepare_permutation_layout,
 )
-from pipeline import _keep_smaller_root_pair
-from permutation import permutation_cutoffs_from_frames
+from pipeline import _keep_smaller_direction_pair, _keep_smaller_root_pair
+from permutation import clear_cutoff_cache, permutation_cutoffs_from_frames, smoothed_null_cutoff
 from plotting import summary_csv_path
 
 
@@ -24,6 +25,8 @@ def test_default_yaml_sets_effect_size_and_null_percentile():
     assert config.resistance_min_effect_size == 0.2
     assert config.strong_min_effect_size == -0.2
     assert config.null_percentile == 5
+    assert config.min_group_count == 3
+    assert config.jaccard_threshold == 0.9
 
 
 def test_summary_rows_count_the_and_mask_and_flag_an_empty_tree():
@@ -104,6 +107,49 @@ def test_root_keeps_the_smaller_feature_when_both_directions_pass():
     assert kept_sensitive["feature"].tolist() == ["B_cell_inverse"]
 
 
+def test_direction_pair_keeps_the_smaller_selected_group():
+    columns = [f"c{i}" for i in range(8)]
+    features = pd.DataFrame([[1, 1, 0, 0, 0, 0, 0, 0]], index=["TP53_ko"], columns=columns)
+    scored = pd.DataFrame(
+        {
+            "feature": ["TP53_ko", "TP53_ko_inverse"],
+            "p_value": [0.01, 0.02],
+        }
+    )
+    kept = _keep_smaller_direction_pair(scored, features)
+    assert kept["feature"].tolist() == ["TP53_ko"]
+
+
+def test_summary_uses_discovery_p_when_present():
+    celllines = ["c1", "c2", "c3", "c4"]
+    features = pd.DataFrame([[1, 1, 0, 0]], index=["CDKN2A_ko"], columns=celllines)
+    scores = pd.DataFrame({"cellline": celllines, "crispr": [-2.0, -1.0, 1.0, 2.0]})
+    root = FeatureNode("PPM1D")
+    root.add_child(
+        FeatureNode(
+            "CDKN2A_ko",
+            discovery_p=1.23e-5,
+            discovery_feature="CDKN2A_ko",
+            n_mutant=2,
+            n_reference=2,
+        )
+    )
+    rows = build_cohort_summary_rows(
+        feature_tree=root,
+        fdf=features,
+        tdf_filtered=scores,
+        target="PPM1D",
+        dataset="crispr",
+        cancertype="SOLID",
+        oncotree_column="oncotreeprimarydisease",
+        logic_type="AND",
+        ko_datatype="crispr",
+    )
+    assert rows[0]["Wilcoxon_pval"] == 1.23e-5
+    assert rows[0]["Number_mutant"] == 2
+    assert rows[0]["Number_WT"] == 2
+
+
 def test_summary_csv_path_omits_logic_type(tmp_path):
     path = summary_csv_path("PPM1D", "crispr", ["SOLID"], tmp_path)
     today = date.today().strftime("%Y-%m-%d")
@@ -113,7 +159,14 @@ def test_summary_csv_path_omits_logic_type(tmp_path):
     assert "_boxplots" not in path
 
 
-def test_permutation_cutoff_is_the_percentile_of_the_best_p_value():
+def test_smoothed_null_cutoff_means_the_lowest_k_minima():
+    values = [0.04, 0.01, 0.03, 0.02, 0.05]
+    # percentile 40 -> k = ceil(5 * 0.4) = 2 -> mean of 0.01, 0.02
+    assert smoothed_null_cutoff(values, percentile=40) == pytest.approx(0.015)
+
+
+def test_permutation_cutoff_is_the_smoothed_mean_of_the_best_p_values():
+    clear_cutoff_cache()
     celllines = [f"c{i}" for i in range(8)]
     scores = np.array([-4.0, -3.0, -2.0, -1.0, 1.0, 2.0, 3.0, 4.0])
     features = pd.DataFrame(
@@ -138,9 +191,35 @@ def test_permutation_cutoff_is_the_percentile_of_the_best_p_value():
         n_permutations=8,
         percentile=5,
         n_jobs=1,
+        use_cache=False,
     )
-    assert result["pvalue_cutoff"] == np.percentile(result["min_pvals_per_permutation"], 5)
-    assert result["qvalue_cutoff"] == np.percentile(result["min_qvals_per_permutation"], 5)
+    assert result["pvalue_cutoff"] == smoothed_null_cutoff(result["min_pvals_per_permutation"], 5)
+    assert result["qvalue_cutoff"] == smoothed_null_cutoff(result["min_qvals_per_permutation"], 5)
+
+    clear_cutoff_cache()
+    stored = permutation_cutoffs_from_frames(
+        tdf=tdf,
+        fdf=features,
+        filter_score_column="crispr_zscore",
+        wilcox_score_column="crispr",
+        n_permutations=8,
+        percentile=5,
+        n_jobs=1,
+        use_cache=True,
+    )
+    # Same n_cells reuses the cached cutoff without reshuffling.
+    again = permutation_cutoffs_from_frames(
+        tdf=tdf,
+        fdf=features,
+        filter_score_column="crispr_zscore",
+        wilcox_score_column="crispr",
+        n_permutations=8,
+        percentile=5,
+        n_jobs=1,
+        use_cache=True,
+    )
+    assert again["pvalue_cutoff"] == stored["pvalue_cutoff"]
+    assert again["min_pvals_per_permutation"] == stored["min_pvals_per_permutation"]
 
     flipped = tdf.copy()
     flipped["cellline"] = ["c4", "c5", "c6", "c7", "c0", "c1", "c2", "c3"]

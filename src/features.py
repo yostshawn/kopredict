@@ -3,7 +3,7 @@
 Typical use: align the binary feature matrix (rows = feature IDs, columns = cellline)
 with the target dependency table, z-score dep scores, filter features by *mean* dep
 (using z-scored dep), rank by Wilcoxon on **raw** dep where required, then hypergeom
-overlap and grouping (see ``pipeline.determine_best_biomrker_sets``).
+overlap and grouping (see ``pipeline.determine_best_biomarker_sets``).
 """
 
 import sys
@@ -16,16 +16,30 @@ from scipy import stats
 from scipy.stats import hypergeom
 from statsmodels.stats.multitest import multipletests
 
-from utils import sig_figs
+from utils import hash_feature_rows, sig_figs
 from database import pull_target_gene_dependency_scores
 
 
 class FeatureNode:
     """Tree node for feature groups. convert_to_list_of_lists() returns paths as list of lists."""
 
-    def __init__(self, f, sens_res="sensitive"):
+    def __init__(
+        self,
+        f,
+        sens_res="sensitive",
+        discovery_p=None,
+        discovery_effect=None,
+        discovery_feature=None,
+        n_mutant=None,
+        n_reference=None,
+    ):
         self.feature = f
         self.sens_res = sens_res
+        self.discovery_p = discovery_p
+        self.discovery_effect = discovery_effect
+        self.discovery_feature = discovery_feature
+        self.n_mutant = n_mutant
+        self.n_reference = n_reference
         self.children = []
 
     def add_child(self, child):
@@ -80,18 +94,6 @@ def cleanup_featureset(fdf, mindiff=3):
     return pd.concat([unique_features_df, merged])
 
 
-def _hash_feature_rows(encoded: np.ndarray) -> np.ndarray:
-    data = np.ascontiguousarray(encoded)
-    pad = (-data.shape[1]) % 8
-    if pad:
-        data = np.pad(data, ((0, 0), (0, pad)), mode="constant")
-    folded = data.view(np.uint64)
-    hashes = np.zeros(data.shape[0], dtype=np.uint64)
-    for column in range(folded.shape[1]):
-        hashes ^= folded[:, column] * np.uint64(0x9E3779B97F4A7C15 + column)
-    return hashes
-
-
 def _merge_exact_feature_rows(frame: pd.DataFrame) -> pd.DataFrame:
     """Combine rows that are identical on 0, 1, and missing cells."""
     if len(frame) < 2:
@@ -100,7 +102,7 @@ def _merge_exact_feature_rows(frame: pd.DataFrame) -> pd.DataFrame:
     encoded = np.zeros(values.shape, dtype=np.uint8)
     encoded[np.equal(values, 1)] = 1
     encoded[np.isnan(values)] = 255
-    hashes = _hash_feature_rows(encoded)
+    hashes = hash_feature_rows(encoded)
     groups: dict[int, list[int]] = {}
     name_groups: dict[int, list[str]] = {}
     representatives: list[int] = []
@@ -142,27 +144,6 @@ def restrict_features_to_celllines(fdf: pd.DataFrame, celllines) -> pd.DataFrame
     if subset.empty:
         return subset
     return _merge_exact_feature_rows(subset)
-
-
-def cellline_interesect(tdf, fdf, input_list=None):
-    """Intersect cell lines between target and feature dataframes."""
-    target_cl = pd.Index(tdf["cellline"].unique())
-    if input_list is not None:
-        target_cl = target_cl.intersection(pd.Index(input_list))
-    return fdf.columns.intersection(target_cl).tolist()
-
-
-def filter_features_by_mean(score_column=None, fdf=None, tdf=None):
-    """Feature names whose 1s have a large enough negative mean-score gap."""
-    if fdf.empty:
-        return []
-    if tdf.empty:
-        sys.exit("ERROR: Need to provide target dataframe 'tdf = PANDAS'")
-    if score_column is None or score_column not in tdf.columns:
-        sys.exit("ERROR: Provide score column and make sure it is in the target dataframe")
-
-    forward, _inverse = mean_filter_directions(score_column=score_column, fdf=fdf, tdf=tdf)
-    return forward
 
 
 INVERSE_SUFFIX = "_inverse"
@@ -282,13 +263,15 @@ def mean_filter_directions(
     min_effect_size=-0.2,
     direction="sensitivity",
     effect_vs_wt=False,
+    min_group_count=3,
 ):
     """Features whose named group moves ``min_effect_size`` from the reference mean.
 
     By default the reference is every cell line in the subset (parent mean). With
     ``effect_vs_wt``, the reference is the complementary group (mutant vs WT).
     A sensitive hit must fall at least that far below it. A resistant hit must rise
-    at least that far above it. Missing cells are left out. Returns
+    at least that far above it. Both the named group and its complement must have at
+    least ``min_group_count`` cell lines. Missing cells are left out. Returns
     ``(forward_names, inverse_names)``.
     """
     if fdf is None or fdf.empty:
@@ -305,14 +288,15 @@ def mean_filter_directions(
     forward_effect, inverse_effect = _directional_effects(
         mean_ones, mean_zeros, n_ones, n_zeros, effect_vs_wt=effect_vs_wt
     )
+    sized = (n_ones >= min_group_count) & (n_zeros >= min_group_count)
     if direction == "resistance":
         limit = min_effect_size if min_effect_size > 0 else abs(min_effect_size)
-        forward_keep = np.isfinite(forward_effect) & (forward_effect >= limit)
-        inverse_keep = np.isfinite(inverse_effect) & (inverse_effect >= limit)
+        forward_keep = sized & np.isfinite(forward_effect) & (forward_effect >= limit)
+        inverse_keep = sized & np.isfinite(inverse_effect) & (inverse_effect >= limit)
     else:
         limit = min_effect_size if min_effect_size < 0 else -abs(min_effect_size)
-        forward_keep = np.isfinite(forward_effect) & (forward_effect <= limit)
-        inverse_keep = np.isfinite(inverse_effect) & (inverse_effect <= limit)
+        forward_keep = sized & np.isfinite(forward_effect) & (forward_effect <= limit)
+        inverse_keep = sized & np.isfinite(inverse_effect) & (inverse_effect <= limit)
     names = index.to_numpy()
     return names[forward_keep].tolist(), names[inverse_keep].tolist()
 
@@ -409,31 +393,9 @@ def get_target_df(gene, dataset):
     return target_df
 
 
-# Drug / PGX target mode (Redshift s3_pgx_*) — disabled in local-only build.
-# def get_drug_target_df(gene):
-#     cur_drugs_df = drugs_given_target(gene)
-#     ...
-
-
-def get_drug_target_df(gene):
-    raise NotImplementedError(
-        "Drug-target mode is disabled. Use dataset 'crispr' or 'rnai' with local dependency files."
-    )
-
-
 def add_zscore_to_df(df, value_col):
     """Add z-scored column (value_col+'_zscore') to df in-place."""
     df[value_col + "_zscore"] = stats.zscore(df[value_col])
-
-
-def return_minmax_series(df, value_col, mean_scale=True):
-    """Min-max scale a column to [-1, 1], optionally mean-centered."""
-    min_val = df[value_col].min()
-    max_val = df[value_col].max()
-    scaled_series = 2 * ((df[value_col] - min_val) / (max_val - min_val)) - 1
-    if mean_scale:
-        return scaled_series - scaled_series.mean()
-    return scaled_series
 
 
 def wilcoxon_test(group, tdf, score_column, alternative="less"):
@@ -526,6 +488,7 @@ def directional_wilcoxon_table(
     min_effect_size=-0.2,
     direction="sensitivity",
     effect_vs_wt=False,
+    min_group_count=3,
 ) -> pd.DataFrame:
     """Wilcoxon rows for both group directions, with one BH correction across them.
 
@@ -533,7 +496,9 @@ def directional_wilcoxon_table(
     ``effect_size`` is the named group's mean minus the parent subset mean, or minus the
     complementary group mean when ``effect_vs_wt`` is true.
     """
-    empty = pd.DataFrame(columns=["feature", "p_value", "q_value", "effect_size"])
+    empty = pd.DataFrame(
+        columns=["feature", "p_value", "q_value", "effect_size", "n_mutant", "n_reference"]
+    )
     if fdf is None or fdf.empty:
         return empty
     effects = _mean_differences(wilcox_score_column, fdf, tdf)
@@ -555,12 +520,18 @@ def directional_wilcoxon_table(
         min_effect_size=min_effect_size,
         direction=direction,
         effect_vs_wt=effect_vs_wt,
+        min_group_count=min_group_count,
     )
     ordered = list(dict.fromkeys([*forward, *inverse]))
     if not ordered:
         return empty
     scores = tdf.drop_duplicates("cellline").set_index("cellline")[wilcox_score_column]
     both = ranksums_less_pvalues(fdf.loc[ordered], scores)
+    n_map = {}
+    if parts is not None:
+        _mo, _mz, n_ones, n_zeros, index = parts
+        for name, n1, n0 in zip(index.to_numpy(), n_ones, n_zeros):
+            n_map[str(name)] = (int(n1), int(n0))
     rows = []
     forward_set = set(map(str, forward))
     inverse_set = set(map(str, inverse))
@@ -570,12 +541,13 @@ def directional_wilcoxon_table(
         if isinstance(raw_effect, pd.Series):
             raw_effect = raw_effect.iloc[0]
         effect = float(raw_effect) if pd.notna(raw_effect) else np.nan
+        n1, n0 = n_map.get(key, (None, None))
         if key in forward_set:
             p_value = both.at[name, "p_inverse" if direction == "resistance" else "p_forward"]
             if named_shift is not None:
                 effect = float(named_shift[0].get(name, np.nan))
             if np.isfinite(p_value):
-                rows.append((key, float(p_value), effect))
+                rows.append((key, float(p_value), effect, n1, n0))
         if key in inverse_set:
             p_value = both.at[name, "p_forward" if direction == "resistance" else "p_inverse"]
             if named_shift is not None:
@@ -583,8 +555,10 @@ def directional_wilcoxon_table(
             else:
                 effect = -effect
             if np.isfinite(p_value):
-                rows.append((inverse_feature_name(key), float(p_value), effect))
-    table = pd.DataFrame(rows, columns=["feature", "p_value", "effect_size"])
+                rows.append((inverse_feature_name(key), float(p_value), effect, n0, n1))
+    table = pd.DataFrame(
+        rows, columns=["feature", "p_value", "effect_size", "n_mutant", "n_reference"]
+    )
     if table.empty:
         return empty
     _reject, q_values, _, _ = multipletests(table["p_value"], method="fdr_bh")
@@ -677,19 +651,27 @@ def _assign_shuffled_scores(layout, shuffled_labels):
 
 
 def _effect_keep_mask(
-    mean_ones, mean_zeros, n_ones, n_zeros, min_effect_size, direction, effect_vs_wt=False
+    mean_ones,
+    mean_zeros,
+    n_ones,
+    n_zeros,
+    min_effect_size,
+    direction,
+    effect_vs_wt=False,
+    min_group_count=3,
 ):
     forward_effect, inverse_effect = _directional_effects(
         mean_ones, mean_zeros, n_ones, n_zeros, effect_vs_wt=effect_vs_wt
     )
+    sized = (n_ones >= min_group_count) & (n_zeros >= min_group_count)
     if direction == "resistance":
         limit = min_effect_size if min_effect_size > 0 else abs(min_effect_size)
-        forward = np.isfinite(forward_effect) & (forward_effect >= limit)
-        inverse = np.isfinite(inverse_effect) & (inverse_effect >= limit)
+        forward = sized & np.isfinite(forward_effect) & (forward_effect >= limit)
+        inverse = sized & np.isfinite(inverse_effect) & (inverse_effect >= limit)
     else:
         limit = min_effect_size if min_effect_size < 0 else -abs(min_effect_size)
-        forward = np.isfinite(forward_effect) & (forward_effect <= limit)
-        inverse = np.isfinite(inverse_effect) & (inverse_effect <= limit)
+        forward = sized & np.isfinite(forward_effect) & (forward_effect <= limit)
+        inverse = sized & np.isfinite(inverse_effect) & (inverse_effect <= limit)
     return forward, inverse
 
 
@@ -735,7 +717,12 @@ def _ranksum_tails(matrix, scores, group_ids, present_masks, selected):
 
 
 def permutation_null_for_seed(
-    layout, random_state, min_effect_size=-0.2, direction="sensitivity", effect_vs_wt=False
+    layout,
+    random_state,
+    min_effect_size=-0.2,
+    direction="sensitivity",
+    effect_vs_wt=False,
+    min_group_count=3,
 ):
     """P-values and q-values for one label shuffle on a prepared layout.
 
@@ -751,6 +738,7 @@ def permutation_null_for_seed(
         min_effect_size,
         direction,
         effect_vs_wt=effect_vs_wt,
+        min_group_count=min_group_count,
     )
     selected = forward | inverse
     if not np.any(selected):
@@ -875,6 +863,7 @@ def return_possible_features(
     min_effect_size=-0.2,
     direction="sensitivity",
     effect_vs_wt=False,
+    min_group_count=3,
 ):
     """Filter features by mean then run Wilcoxon/FDR on both group directions.
 
@@ -897,9 +886,12 @@ def return_possible_features(
         min_effect_size=min_effect_size,
         direction=direction,
         effect_vs_wt=effect_vs_wt,
+        min_group_count=min_group_count,
     )
     if wilcox_pvals.empty:
-        return pd.DataFrame(columns=["feature", "p_value", "q_value"])
+        return pd.DataFrame(
+            columns=["feature", "p_value", "q_value", "effect_size", "n_mutant", "n_reference"]
+        )
     if qval_cutoff < 1:
         final_df = wilcox_pvals[
             (wilcox_pvals["q_value"] < qval_cutoff) & (wilcox_pvals["p_value"] < wilcox_cutoff)
@@ -909,7 +901,7 @@ def return_possible_features(
     return final_df.sort_values(by="p_value")
 
 
-def generaate_overlap_matrix(df, feature_set1, feature_set2):
+def generate_overlap_matrix(df, feature_set1, feature_set2):
     """Compute overlap matrix between two feature sets."""
     missing1 = [f for f in feature_set1 if f not in df.index]
     missing2 = [f for f in feature_set2 if f not in df.index]
@@ -957,6 +949,89 @@ def run_hypergeom_tests(feature_df, overlap_matrix):
     return pd.DataFrame(
         [(*r, p) for r, p in zip(rows, p_vals)], columns=["feature1", "feature2", "pvalue"]
     )
+
+
+def _binary_ones_vector(fdf, name):
+    """Boolean vector of 1-calls for a feature row (inverse rows must already exist)."""
+    row = fdf.loc[name]
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[0]
+    return row.fillna(0).to_numpy() == 1
+
+
+def feature_jaccard(fdf, name_a, name_b) -> float:
+    """Jaccard overlap of cell lines called 1 for two features."""
+    a = _binary_ones_vector(fdf, name_a)
+    b = _binary_ones_vector(fdf, name_b)
+    inter = np.logical_and(a, b).sum()
+    union = np.logical_or(a, b).sum()
+    if union <= 0:
+        return 0.0
+    return float(inter) / float(union)
+
+
+def group_features_by_jaccard(
+    fdf,
+    feature_list,
+    feature_wilcox_pvals=None,
+    jaccard_threshold=0.9,
+):
+    """Group features greedily by Jaccard similarity to each group's best-p seed.
+
+    Features are considered in ascending Wilcoxon p-order. A feature joins the first
+    group whose seed has Jaccard >= ``jaccard_threshold``; otherwise it starts a group.
+    """
+    names = list(dict.fromkeys(str(x) for x in feature_list))
+    if not names:
+        return []
+    fdf = materialize_inverse_features(fdf, names)
+    pmap = {}
+    if feature_wilcox_pvals is not None and not getattr(feature_wilcox_pvals, "empty", True):
+        if isinstance(feature_wilcox_pvals, pd.DataFrame):
+            if "feature" in feature_wilcox_pvals.columns:
+                pmap = feature_wilcox_pvals.set_index("feature")["p_value"].to_dict()
+            else:
+                pmap = feature_wilcox_pvals.iloc[:, 0].to_dict()
+        else:
+            pmap = dict(feature_wilcox_pvals)
+    ordered = sorted(names, key=lambda x: float(pmap.get(x, 1.0)))
+    groups = []
+    for feat in ordered:
+        placed = False
+        for group in groups:
+            seed = group[0]
+            if feature_jaccard(fdf, feat, seed) >= jaccard_threshold:
+                group.append(feat)
+                placed = True
+                break
+        if not placed:
+            groups.append([feat])
+    return groups
+
+
+def discovery_step_masks(fdf, feature_blocks, logic_type, step_k):
+    """Mutant and reference masks used at discovery for tree step ``step_k``.
+
+    AND searches inside carriers of all prior blocks. OR searches inside non-carriers
+    of all prior blocks. The mutant group is that search subset with the step feature;
+    the reference is the same subset without it.
+    """
+    columns = fdf.columns
+    logic_u = str(logic_type).upper()
+    if step_k <= 0:
+        parent = pd.Series(True, index=columns)
+    elif logic_u == "AND":
+        parent = pd.Series(True, index=columns)
+        for i in range(step_k):
+            parent = parent & rows_for_block(fdf, feature_blocks[i]).fillna(0).any(axis=0)
+    else:
+        parent = pd.Series(True, index=columns)
+        for i in range(step_k):
+            parent = parent & ~rows_for_block(fdf, feature_blocks[i]).fillna(0).any(axis=0)
+    block = rows_for_block(fdf, feature_blocks[step_k]).fillna(0).any(axis=0)
+    mutant = parent & block
+    reference = parent & ~block
+    return mutant, reference
 
 
 def group_features_by_pvalue(df, feature_list, pvalue_threshold=0.0000000001):
@@ -1041,25 +1116,3 @@ def group_features_by_pvalue_v2(
     ]
     result_list.extend([f] for f in orphans)
     return result_list
-
-
-def get_p_and_q_cutoffs(x):
-    """Return P and Q cutoffs for sample size N where X <= N."""
-    pval_thresholds_dict = {
-        "N": [10, 25, 50, 100, 500, 200000],
-        "P": [0.05, 0.001, 0.0001, 0.00001, 0.000001, 0.0000001],
-        "Q": [0.5, 0.1, 0.05, 0.01, 0.005, 0.0001],
-    }
-    pval_thresholds = pd.DataFrame(pval_thresholds_dict)
-    try:
-        if not isinstance(x, int):
-            raise TypeError(f"Input X must be an integer, got {type(x).__name__}")
-        lower_rows = pval_thresholds[pval_thresholds["N"] <= x]
-        if lower_rows.empty:
-            return f"Error: {x} is smaller than or equal to the minimum N ({pval_thresholds['N'].min()})."
-        match = lower_rows.sort_values("N").tail(1)
-        if match.empty:
-            return f"Error: Value {x} exceeds the maximum sample size in the table."
-        return match[["P", "Q"]].values.flatten().tolist()
-    except TypeError as e:
-        return f"Input Error: {e}"

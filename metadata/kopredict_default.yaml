@@ -79,6 +79,12 @@ essentiality_threshold: null
 # Feature subsets kept at each later step of the tree. 0 keeps every subset that passes.
 max_next_feature_subsets: 5
 
+# Minimum mutant and WT cell lines required after the effect-size filter (each side).
+min_group_count: 3
+
+# Jaccard overlap required to put two features in the same group (seed clustering).
+jaccard_threshold: 0.8
+
 # Include expression high/low features. They are dropped when false.
 keep_expression_features: false
 

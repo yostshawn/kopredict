@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from features import rows_for_block, rows_for_features, wilcoxon_test
+from features import discovery_step_masks, rows_for_features, wilcoxon_test
 
 
 def _flag_group_message(group: str | None) -> str | None:
@@ -34,21 +34,6 @@ def _cohort_fdf_tdf(fdf, tdf, ko_datatype: str):
     tdf_plot = tdf[tdf["cellline"].astype(str).isin(cohort_cols)].copy()
     score_col = str(ko_datatype).lower()
     return fdf_plot, tdf_plot, score_col, len(cohort_cols)
-
-
-def _cumulative_mask(fdf_plot, feature_blocks: list, logic_type: str, up_to_k: int):
-    logic_u = logic_type.upper()
-    if logic_u == "AND":
-        m = pd.Series(True, index=fdf_plot.columns)
-    else:
-        m = pd.Series(False, index=fdf_plot.columns)
-    for i in range(up_to_k + 1):
-        bm = rows_for_block(fdf_plot, feature_blocks[i]).fillna(0).any(axis=0)
-        if logic_u == "AND":
-            m = m & bm
-        else:
-            m = m | bm
-    return m
 
 
 def _best_feature_wilcox_p_in_block(
@@ -214,18 +199,40 @@ def build_cohort_summary_rows(
         any_path_blocks = True
         blocks = [node.feature for node in nodes]
         for k, node in enumerate(nodes):
-            m = _cumulative_mask(fdf_plot, blocks, logic_type, k)
-            n_mut = int(m.sum())
-            n_wt = int(n_total - n_mut)
+            mut_mask, ref_mask = discovery_step_masks(fdf_plot, blocks, logic_type, k)
+            n_mut = (
+                int(node.n_mutant)
+                if getattr(node, "n_mutant", None) is not None
+                else int(mut_mask.sum())
+            )
+            n_wt = (
+                int(node.n_reference)
+                if getattr(node, "n_reference", None) is not None
+                else int(ref_mask.sum())
+            )
             block_k = node.feature
             alternative = "greater" if getattr(node, "sens_res", "sensitive") == "resistant" else "less"
-            grp_f, grp_p = _best_feature_wilcox_p_in_block(
-                fdf_plot, tdf_plot, score_col, block_k, alternative=alternative
-            )
+            disc_f = getattr(node, "discovery_feature", None)
+            disc_p = getattr(node, "discovery_p", None)
+            if disc_f is not None and disc_p is not None and not (
+                isinstance(disc_p, float) and np.isnan(disc_p)
+            ):
+                grp_f, grp_p = disc_f, float(disc_p)
+            else:
+                grp_f, grp_p = _best_feature_wilcox_p_in_block(
+                    fdf_plot, tdf_plot, score_col, block_k, alternative=alternative
+                )
             tree_parts = blocks[: k + 1]
             group_tree = " -> ".join(tree_parts)
             biomarker_set = _format_biomarker_set(block_k)
-            ess = _mutant_wt_essentiality_stats(tdf_plot, score_col, m)
+            # Essentiality means use discovery mutant vs reference masks.
+            ess_mask = mut_mask.copy()
+            # Encode reference as False and mutant as True for the helper.
+            ess = _mutant_wt_essentiality_stats(tdf_plot, score_col, ess_mask)
+            # Override WT stats with the discovery reference subset (not cohort complement).
+            ref_stats = _mutant_wt_essentiality_stats(tdf_plot, score_col, ref_mask)
+            ess["WT_mean_essentiality"] = ref_stats["Mutant_mean_essentiality"]
+            ess["WT_median_essentiality"] = ref_stats["Mutant_median_essentiality"]
             wp = None
             if grp_p is not None and not (isinstance(grp_p, float) and np.isnan(grp_p)):
                 wp = float(grp_p)
