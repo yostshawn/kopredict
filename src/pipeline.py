@@ -65,7 +65,7 @@ def determine_best_biomarker_sets(
     min_effect_size=-0.2,
     direction="sensitivity",
     min_group_count=3,
-    jaccard_threshold=0.9,
+    jaccard_threshold=0.8,
     effect_vs_wt=False,
 ):
     """Run feature pipeline: Wilcoxon filter -> Jaccard group."""
@@ -332,7 +332,7 @@ def run_prediction_for_biomarker_given_target_dataset(
     child_min_effect_size=-0.1,
     child_resistance_min_effect_size=0.1,
     min_group_count=3,
-    jaccard_threshold=0.9,
+    jaccard_threshold=0.8,
 ):
     """Run full biomarker prediction pipeline for target/dataset.
 
@@ -559,7 +559,7 @@ def _keep_smaller_direction_pair(scored_df: pd.DataFrame, fdf: pd.DataFrame) -> 
     return scored_df
 
 
-def _group_scored_features(fdf, scored, jaccard_threshold=0.9):
+def _group_scored_features(fdf, scored, jaccard_threshold=0.8):
     """Jaccard-group one scored feature table. Returns groups and the materialized matrix."""
     if scored is None or scored.empty:
         return [], fdf
@@ -613,7 +613,7 @@ def add_next_best_features_to_tree(
     path_features=None,
     effect_vs_wt=False,
     min_group_count=3,
-    jaccard_threshold=0.9,
+    jaccard_threshold=0.8,
 ):
     """Recursively add best feature groups as children to cur_node."""
     if sensitivity_min_effect_size is None:

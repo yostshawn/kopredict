@@ -2,22 +2,20 @@
 
 Typical use: align the binary feature matrix (rows = feature IDs, columns = cellline)
 with the target dependency table, z-score dep scores, filter features by *mean* dep
-(using z-scored dep), rank by Wilcoxon on **raw** dep where required, then hypergeom
-overlap and grouping (see ``pipeline.determine_best_biomarker_sets``).
+(using z-scored dep), rank by Wilcoxon on **raw** dep where required, then group
+by Jaccard overlap (see ``pipeline.determine_best_biomarker_sets``).
 """
 
-import sys
-import itertools
 import re
-import pandas as pd
+import sys
+
 import numpy as np
-import networkx as nx
+import pandas as pd
 from scipy import stats
-from scipy.stats import hypergeom
 from statsmodels.stats.multitest import multipletests
 
-from utils import hash_feature_rows, sig_figs
 from database import pull_target_gene_dependency_scores
+from utils import hash_feature_rows, sig_figs
 
 
 class FeatureNode:
@@ -901,56 +899,6 @@ def return_possible_features(
     return final_df.sort_values(by="p_value")
 
 
-def generate_overlap_matrix(df, feature_set1, feature_set2):
-    """Compute overlap matrix between two feature sets."""
-    missing1 = [f for f in feature_set1 if f not in df.index]
-    missing2 = [f for f in feature_set2 if f not in df.index]
-    if missing1:
-        raise KeyError(f"Features not found in DataFrame: {missing1}")
-    if missing2:
-        raise KeyError(f"Features not found in DataFrame: {missing2}")
-
-    needed = list(set(feature_set1) | set(feature_set2))
-    df_sub = df.loc[needed].fillna(0)
-    subset_df1 = df_sub.loc[feature_set1]
-    subset_df2 = df_sub.loc[feature_set2]
-    overlap_values = subset_df1.values @ subset_df2.values.T
-    return pd.DataFrame(overlap_values, index=subset_df1.index, columns=subset_df2.index)
-
-
-def run_hypergeom_tests(feature_df, overlap_matrix):
-    """Run hypergeometric tests for feature overlaps."""
-    features_to_test = overlap_matrix.columns.tolist()
-    feature_data = {f: feature_df.loc[f].dropna() for f in features_to_test}
-
-    rows, k_vals, M_vals, n_vals, N_vals = [], [], [], [], []
-    for feature1, feature2 in itertools.combinations(features_to_test, 2):
-        f1_series = feature_data[feature1]
-        f2_series = feature_data[feature2]
-        common_cell_lines = f1_series.index.intersection(f2_series.index)
-        f1_data = f1_series[common_cell_lines]
-        f2_data = f2_series[common_cell_lines]
-        M = len(common_cell_lines)
-        n = (f1_data == 1).sum()
-        N = (f2_data == 1).sum()
-        k = overlap_matrix.loc[feature1, feature2]
-        rows.append((feature1, feature2))
-        k_vals.append(k)
-        M_vals.append(M)
-        n_vals.append(n)
-        N_vals.append(N)
-
-    k_arr = np.array(k_vals, dtype=float)
-    M_arr = np.array(M_vals, dtype=float)
-    n_arr = np.array(n_vals, dtype=float)
-    N_arr = np.array(N_vals, dtype=float)
-    valid = (M_arr > 0) & (n_arr > 0) & (N_arr > 0)
-    p_vals = np.where(valid, hypergeom.sf(k_arr - 1, M_arr, n_arr, N_arr), 1.0)
-    return pd.DataFrame(
-        [(*r, p) for r, p in zip(rows, p_vals)], columns=["feature1", "feature2", "pvalue"]
-    )
-
-
 def _binary_ones_vector(fdf, name):
     """Boolean vector of 1-calls for a feature row (inverse rows must already exist)."""
     row = fdf.loc[name]
@@ -974,7 +922,7 @@ def group_features_by_jaccard(
     fdf,
     feature_list,
     feature_wilcox_pvals=None,
-    jaccard_threshold=0.9,
+    jaccard_threshold=0.8,
 ):
     """Group features greedily by Jaccard similarity to each group's best-p seed.
 
@@ -1032,87 +980,3 @@ def discovery_step_masks(fdf, feature_blocks, logic_type, step_k):
     mutant = parent & block
     reference = parent & ~block
     return mutant, reference
-
-
-def group_features_by_pvalue(df, feature_list, pvalue_threshold=0.0000000001):
-    """Group features by hypergeometric p-value (connected components)."""
-    significant_df = df[df["pvalue"] < pvalue_threshold]
-    G = nx.Graph()
-    if not significant_df.empty:
-        G.add_edges_from(zip(significant_df["feature1"], significant_df["feature2"]))
-    result_list = [list(component) for component in nx.connected_components(G)]
-    features_in_groups = set(itertools.chain.from_iterable(result_list))
-    orphans = [f for f in dict.fromkeys(feature_list) if f not in features_in_groups]
-    result_list.extend([f] for f in orphans)
-    return result_list
-
-
-def group_features_by_pvalue_v2(
-    df,
-    feature_list,
-    pvalue_threshold=0.0000000001,
-    fdf=None,
-    tdf=None,
-    score_column=None,
-    feature_wilcox_pvals=None,
-    wilcox_factor=10,
-):
-    """Group features by p-value with Wilcoxon-based ordering."""
-    significant_df = df[df["pvalue"] < pvalue_threshold]
-    geom_pairs = set()
-    for _, row in significant_df.iterrows():
-        f1, f2 = row["feature1"], row["feature2"]
-        geom_pairs.add((f1, f2))
-        geom_pairs.add((f2, f1))
-    wilcox_check = (
-        fdf is not None
-        and tdf is not None
-        and score_column is not None
-        and feature_wilcox_pvals is not None
-    )
-    if wilcox_check and isinstance(feature_wilcox_pvals, pd.DataFrame):
-        feature_wilcox_pvals = (
-            feature_wilcox_pvals.set_index("feature")["p_value"]
-            if "feature" in feature_wilcox_pvals.columns
-            else feature_wilcox_pvals.iloc[:, 0]
-        )
-    sorted_features = sorted(
-        dict.fromkeys(feature_list),
-        key=lambda x: feature_wilcox_pvals.get(x, 1) if wilcox_check else 0,
-    )
-    result_list = []
-    for feat in sorted_features:
-        added = False
-        for group in result_list:
-            has_geom = any((feat, g) in geom_pairs for g in group)
-            if not has_geom:
-                continue
-            if wilcox_check:
-                min_wilcox = min(
-                    feature_wilcox_pvals.get(feat, np.nan),
-                    min(feature_wilcox_pvals.get(g, np.nan) for g in group),
-                )
-                union_row = (
-                    (fdf.loc[feat].fillna(0) == 1) | (fdf.loc[group].fillna(0) == 1)
-                ).any(axis=0).astype(int)
-                union_wilcox = wilcoxon_test(union_row, tdf, score_column)
-                if (
-                    np.isnan(union_wilcox)
-                    or np.isnan(min_wilcox)
-                    or min_wilcox <= 0
-                ):
-                    pass
-                elif union_wilcox >= wilcox_factor * min_wilcox:
-                    continue
-            group.append(feat)
-            added = True
-            break
-        if not added:
-            result_list.append([feat])
-    orphans = [
-        f
-        for f in dict.fromkeys(feature_list)
-        if f not in set(itertools.chain.from_iterable(result_list))
-    ]
-    result_list.extend([f] for f in orphans)
-    return result_list

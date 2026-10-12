@@ -10,7 +10,6 @@ import seaborn as sns
 import scipy.stats as stats
 import pyoncoprint
 from matplotlib.backends.backend_pdf import PdfPages
-
 from features import discovery_step_masks, rows_for_block
 from utils import sig_figs
 

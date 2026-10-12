@@ -8,7 +8,6 @@ from features import (
     base_feature_name,
     directional_wilcoxon_table,
     expanded_feature_labels,
-    group_features_by_pvalue,
     inverse_feature_name,
     materialize_inverse_features,
     rows_for_block,
@@ -51,19 +50,6 @@ def test_merged_inverse_row_is_swapped_not_mixed_with_the_forward_call():
     mixed = rows_for_features(separate, old_bug_name.split(";")).fillna(0).any()
     assert list(pure) == [False, False, True, True]
     assert list(mixed) == [True, True, True, True]
-
-
-def test_geometric_group_keeps_a_forward_feature_next_to_an_inverse():
-    overlap = pd.DataFrame(
-        [{"feature1": "CDKN2A_ko", "feature2": "TP53_altered_inverse", "pvalue": 1e-20}]
-    )
-    groups = group_features_by_pvalue(
-        overlap,
-        ["CDKN2A_ko", "TP53_altered_inverse"],
-        pvalue_threshold=1e-15,
-    )
-    assert len(groups) == 1
-    assert set(groups[0]) == {"CDKN2A_ko", "TP53_altered_inverse"}
 
 
 def test_inverse_wilcoxon_matches_ranksums_on_the_zero_group():

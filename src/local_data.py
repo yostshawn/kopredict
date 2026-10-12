@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import difflib
 import os
+from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, Optional
 
 import pandas as pd
 
@@ -88,9 +88,9 @@ def _read_dependency_cached(path: str) -> pd.DataFrame:
 
 
 def load_cellline_models(
-    celllines: Optional[Iterable[str]] = None,
+    celllines: Iterable[str] | None = None,
     *,
-    columns: Optional[Iterable[str]] = None,
+    columns: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     """Load model / lineage metadata (``Model_and_OmicsSignatures.parquet.gz``).
 
@@ -104,7 +104,7 @@ def load_cellline_models(
     path = str(_data_path(FILE_MODELS))
     df = _read_models_cached(path)
     if celllines is not None:
-        cl = set(str(x) for x in celllines)
+        cl = {str(x) for x in celllines}
         df = df[df["cellline"].astype(str).isin(cl)]
     if columns is not None:
         cols = ["cellline"] + [c.lower() for c in columns if c.lower() != "cellline"]
@@ -114,8 +114,8 @@ def load_cellline_models(
 
 
 def load_omics_full(
-    genes: Optional[Iterable[str]] = None,
-    celllines: Optional[Iterable[str]] = None,
+    genes: Iterable[str] | None = None,
+    celllines: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     """Load long-format omics (``OmicsFull_processed.parquet.gz``).
 
@@ -128,10 +128,10 @@ def load_omics_full(
             "OmicsFull_processed parquet must include a 'gene' column for filtering."
         )
     if genes is not None:
-        gset = set(str(x) for x in genes)
+        gset = {str(x) for x in genes}
         df = df[df["gene"].astype(str).isin(gset)]
     if celllines is not None:
-        cset = set(str(x) for x in celllines)
+        cset = {str(x) for x in celllines}
         df = df[df["cellline"].astype(str).isin(cset)]
     return df.copy()
 
@@ -159,7 +159,7 @@ def _wide_dependency_to_long(
     dfn: pd.DataFrame,
     gene: str,
     value_col: str,
-    celllines: Optional[Iterable[str]] = None,
+    celllines: Iterable[str] | None = None,
     dataset: str = "dependency",
 ) -> pd.DataFrame:
     """Wide matrix: ``cellline`` column + one column per gene → ``cellline``, ``value_col``."""
@@ -174,7 +174,7 @@ def _wide_dependency_to_long(
     wide = wide.rename(columns={gene: value_col})
     wide["cellline"] = wide["cellline"].astype(str)
     if celllines is not None:
-        cset = set(str(x) for x in celllines)
+        cset = {str(x) for x in celllines}
         wide = wide[wide["cellline"].isin(cset)]
     return wide
 
@@ -183,7 +183,7 @@ def _long_dependency_table(
     df: pd.DataFrame,
     gene: str,
     value_col: str,
-    celllines: Optional[Iterable[str]] = None,
+    celllines: Iterable[str] | None = None,
     dataset: str = "dependency",
 ) -> pd.DataFrame:
     """Long-format: ``cellline`` + gene column + score column ``crispr`` or ``rnai`` only."""
@@ -208,7 +208,7 @@ def _long_dependency_table(
         raise _unknown_gene_error(gene, df[gcol].dropna().astype(str).unique().tolist(), dataset)
     sub = sub[["cellline", value_col]].copy()
     if celllines is not None:
-        cset = set(str(x) for x in celllines)
+        cset = {str(x) for x in celllines}
         sub = sub[sub["cellline"].astype(str).isin(cset)]
     return sub
 
@@ -216,7 +216,7 @@ def _long_dependency_table(
 def load_gene_dependency_scores(
     dataset: str,
     gene: str,
-    celllines: Optional[Iterable[str]] = None,
+    celllines: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     """Load CRISPR or RNAi dependency for one gene as ``cellline``, ``crispr`` or ``rnai``."""
     dataset = dataset.lower()

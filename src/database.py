@@ -11,9 +11,7 @@ matching on model fields (no case folding).
 
 import sys
 from pathlib import Path
-
 import pandas as pd
-
 import local_data
 
 _SPECIAL_PANCANCER = "PANCANCER"

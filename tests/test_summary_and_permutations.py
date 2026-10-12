@@ -26,7 +26,7 @@ def test_default_yaml_sets_effect_size_and_null_percentile():
     assert config.strong_min_effect_size == -0.2
     assert config.null_percentile == 5
     assert config.min_group_count == 3
-    assert config.jaccard_threshold == 0.9
+    assert config.jaccard_threshold == 0.8
 
 
 def test_summary_rows_count_the_and_mask_and_flag_an_empty_tree():
