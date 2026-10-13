@@ -41,7 +41,7 @@ from permutation import _limit_blas_threads
 from pipeline import run_prediction_for_biomarker_given_target_dataset
 from plotting import create_boxplot, summary_csv_path
 from prepare import FEATURES_FILENAME
-from sources import metadata_dir
+from sources import metadata_dir, resolve_metadata_path
 
 _CONFIG_NAME = "kopredict_default.yaml"
 _RUN_HELP = """\
@@ -146,7 +146,8 @@ def load_run_config(path: Path | None) -> SimpleNamespace:
     if dataset not in {"crispr", "rnai"}:
         raise SystemExit(f"dataset must be crispr or rnai (got {loaded.get('dataset')!r}).")
     cancer_types = None if _blank(loaded.get("cancer_types")) else loaded.get("cancer_types")
-    cohort_csv = None if _blank(loaded.get("cohort_csv")) else str(loaded.get("cohort_csv"))
+    raw_cohort = loaded.get("cohort_csv")
+    cohort_csv = None if _blank(raw_cohort) else str(resolve_metadata_path(str(raw_cohort)))
     if cancer_types and cohort_csv:
         raise SystemExit("Set cancer_types or cohort_csv, not both.")
     if not cancer_types and not cohort_csv:

@@ -1,0 +1,33 @@
+# PRMT5 RNAi example with expression and proteomics features kept.
+# Run from the repository root:
+#   kopredict example/prmt5_rnai_expr_prot.yaml
+# Search settings match metadata/kopredict_default.yaml except the two keep flags.
+# n_jobs is higher than the default so the shuffles can run together.
+
+target: PRMT5
+dataset: rnai
+cancer_types: null
+cohort_csv: metadata/oncotree_cohorts_solid.csv
+oncotree_column: oncotreeprimarydisease
+group_options: null
+data_dir: null
+features_path: null
+output_dir: example/prmt5_rnai_expr_prot
+n_permutations: 50
+null_percentile: 5
+min_effect_size: -0.2
+resistance_min_effect_size: 0.2
+strong_min_effect_size: -0.2
+child_min_effect_size: -0.1
+child_resistance_min_effect_size: 0.1
+n_jobs: 16
+vmin: -1
+vmax: 1
+debug_wilcox: null
+min_essential_cell_lines: 1
+essentiality_threshold: null
+max_next_feature_subsets: 5
+min_group_count: 3
+jaccard_threshold: 0.8
+keep_expression_features: true
+keep_proteiomic_features: true

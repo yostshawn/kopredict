@@ -4,19 +4,20 @@
 # Options:  kopredict --help
 
 # Gene whose CRISPR or RNAi score is the outcome.
-target: SKP2
+target: PRMT5
 
 # crispr or rnai
-dataset: crispr
+dataset: rnai
 
 # Cohort matched against oncotree_column. Use a string or a list.
 # Allowed values, and what SOLID and PANCANCER include, are in metadata/oncotree.yaml.
 # Leave null when cohort_csv is set.
 cancer_types: null
 
-# CSV with columns oncotree_column and name. See metadata/example_lung_cohort.csv.
+# CSV with columns oncotree_column and name.
+# A relative path is resolved from the source directory that contains metadata/.
 # Leave null when cancer_types is set.
-cohort_csv: /home/yostshawn/projects/KOscreenSensResMarkerPrediction/metadata/oncotree_cohorts_solid.csv
+cohort_csv: metadata/oncotree_cohorts_solid.csv
 
 # Model table column compared with cancer_types.
 oncotree_column: oncotreeprimarydisease

@@ -5,6 +5,7 @@ Publication workbooks are metadata/additional_datasets_to_download.csv.
 Signed DepMap links live in metadata/20260920_DepMap_available_downloads.csv.
 """
 
+import sys
 from pathlib import Path
 import pandas as pd
 
@@ -13,9 +14,16 @@ DEPMAP_FILES_CSV = "default_depmap_files_to_download_and_process.csv"
 ADDITIONAL_DATASETS_CSV = "additional_datasets_to_download.csv"
 
 def metadata_dir() -> Path:
-    """Directory of the DepMap catalog, the file list, and the extra datasets."""
+    """Directory of the DepMap catalog, the file list, and the extra datasets.
+
+    A checkout keeps this next to ``src/``. An install keeps it under the
+    environment prefix. The working directory is the last place checked.
+    """
+    here = Path(__file__).resolve()
     candidates = [
-        Path(__file__).resolve().parents[1] / "metadata",
+        here.parents[1] / "metadata",
+        here.parent / "metadata",
+        Path(sys.prefix) / "metadata",
         Path.cwd() / "metadata",
     ]
     for path in candidates:
@@ -23,6 +31,29 @@ def metadata_dir() -> Path:
             return path
     searched = ", ".join(str(path) for path in candidates)
     raise FileNotFoundError(f"metadata directory not found. Looked in: {searched}")
+
+
+def source_root() -> Path:
+    """Directory that contains ``metadata/`` for this checkout or install."""
+    return metadata_dir().parent
+
+
+def resolve_metadata_path(value: str) -> Path:
+    """Resolve a cohort CSV path.
+
+    An absolute path is used as given. A relative path such as
+    ``metadata/oncotree_cohorts_solid.csv`` is resolved from the source root,
+    then from the current directory.
+    """
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    candidates = [source_root() / path, metadata_dir() / path.name, Path.cwd() / path]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    looked = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(f"Cohort CSV not found: {value}. Looked in: {looked}")
 
 
 def _read_metadata_csv(name: str) -> pd.DataFrame:

@@ -1,12 +1,14 @@
 """Summary rows, the summary filename, and the shuffle cutoff."""
 
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from cli_impl import load_run_config
+from sources import metadata_dir
 from cohort_summary import build_cohort_summary_rows
 from features import (
     FeatureNode,
@@ -27,6 +29,22 @@ def test_default_yaml_sets_effect_size_and_null_percentile():
     assert config.null_percentile == 5
     assert config.min_group_count == 3
     assert config.jaccard_threshold == 0.8
+    assert Path(config.cohort_csv) == (metadata_dir() / "oncotree_cohorts_solid.csv").resolve()
+
+
+def test_relative_cohort_csv_resolves_outside_the_repository(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = load_run_config(None)
+    assert Path(config.cohort_csv) == (metadata_dir() / "oncotree_cohorts_solid.csv").resolve()
+
+
+def test_absolute_cohort_csv_is_kept(tmp_path):
+    cohort = tmp_path / "mine.csv"
+    cohort.write_text("oncotree_column,name\n")
+    config_path = tmp_path / "run.yaml"
+    config_path.write_text(f"cohort_csv: {cohort}\n")
+    config = load_run_config(config_path)
+    assert Path(config.cohort_csv) == cohort
 
 
 def test_summary_rows_count_the_and_mask_and_flag_an_empty_tree():

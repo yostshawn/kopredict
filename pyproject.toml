@@ -56,3 +56,8 @@ py-modules = [
     "sources",
     "utils",
 ]
+
+# Installed under the environment prefix so metadata/oncotree_cohorts_solid.csv
+# still resolves after pip install.
+[tool.setuptools.data-files]
+metadata = ["metadata/*.csv", "metadata/*.yaml"]
