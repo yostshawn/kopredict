@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 import pandas as pd
 
+VERSION = "1.0"
+
 DEPMAP_DOWNLOADS_CSV = "20260920_DepMap_available_downloads.csv"
 DEPMAP_FILES_CSV = "default_depmap_files_to_download_and_process.csv"
 ADDITIONAL_DATASETS_CSV = "additional_datasets_to_download.csv"

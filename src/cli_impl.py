@@ -41,10 +41,12 @@ from permutation import _limit_blas_threads
 from pipeline import run_prediction_for_biomarker_given_target_dataset
 from plotting import create_boxplot, summary_csv_path
 from prepare import FEATURES_FILENAME
-from sources import metadata_dir, resolve_metadata_path
+from sources import VERSION, metadata_dir, resolve_metadata_path
 
 _CONFIG_NAME = "kopredict_default.yaml"
-_RUN_HELP = """\
+_RUN_HELP = f"""\
+Version {VERSION}
+
 Find genomic features linked to one gene's CRISPR or RNAi sensitivity.
 
   kopredict

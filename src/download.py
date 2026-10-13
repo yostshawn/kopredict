@@ -17,6 +17,7 @@ from sources import (
     ADDITIONAL_DATASETS_CSV,
     DEPMAP_DOWNLOADS_CSV,
     DEPMAP_FILES_CSV,
+    VERSION,
     load_additional,
     load_depmap_files,
     metadata_dir,
@@ -322,6 +323,7 @@ def _catalog_instructions() -> str:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=(
+            f"Version {VERSION}\n\n"
             "Download the public files used by kopredict-prepare.\n\n"
             "  kopredict-download\n"
             "  kopredict-download --depmap-release 25Q3\n"

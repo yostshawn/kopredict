@@ -16,7 +16,7 @@ import pyarrow as pa
 from download import DEFAULT_DEPMAP_RELEASE, verify_downloaded_files
 from local_data import clear_load_caches, get_data_dir
 from log import log_to_file, shape
-from sources import additional_record
+from sources import VERSION, additional_record
 from utils import hash_feature_rows
 
 FEATURES_FILENAME = "final_depmap_features_26Q1.parquet.gz"
@@ -1106,6 +1106,7 @@ def _prepare_logged(data_dir: Path, depmap_release: str) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=(
+            f"Version {VERSION}\n\n"
             "Build the local tables and the binary feature matrix from data/raw.\n\n"
             "  kopredict-prepare\n"
             "  kopredict-prepare --depmap-release 25Q3\n"

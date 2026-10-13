@@ -22,7 +22,9 @@ cohort_csv: metadata/oncotree_cohorts_solid.csv
 # Model table column compared with cancer_types.
 oncotree_column: oncotreeprimarydisease
 
-# Optional background filter. Semicolons separate rules. Example:
+# Optional background filter on OmicsFull_processed.parquet.gz.
+# Each rule is GENE,omics,COLUMN,greater|less|equal,VALUE,true|false.
+# Semicolons separate rules. Example:
 # IPPK,omics,tpmlogp1_zscore,greater,1.64,false
 group_options: null
 

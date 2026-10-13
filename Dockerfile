@@ -10,6 +10,7 @@ COPY src ./src
 COPY metadata ./metadata
 RUN pip install --no-cache-dir .
 
-ENV KOPREDICT_DATA_DIR=/data
-VOLUME ["/data"]
+# DepMap files are mounted at ./data (this working directory).
+ENV KOPREDICT_DATA_DIR=data
+VOLUME ["/opt/kopredict/data"]
 ENTRYPOINT ["kopredict"]
