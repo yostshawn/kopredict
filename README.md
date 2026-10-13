@@ -169,8 +169,8 @@ GENE,omics,COLUMN,greater|less|equal,VALUE,true|false
 
 ```text
 KRAS,omics,muthotspot,greater,0,false
-KRAS,omics,tpmlogp1_zscore,greater,2.5,false
-TP53,omics,mutdamaging,greater,0,false
+TP53,omics,altered,greater,0,false
+CCNE1,omics,tpmlogp1_zscore,greater,2.5,false
 ```
 
 | Column | Contents |
