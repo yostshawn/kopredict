@@ -9,7 +9,7 @@ description = "kopredict - knockout sensitivity marker prediction from public De
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
-authors = [{name = "Engine Biosciences"}]
+authors = [{name = "Shawn Yost"}]
 dependencies = [
     "pandas>=2.0",
     "pyarrow>=14.0",
