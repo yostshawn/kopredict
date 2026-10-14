@@ -6,6 +6,8 @@ AND and OR ``FeatureNode`` trees from the same root markers. See
 ``run_prediction_for_biomarker_given_target_dataset``.
 """
 
+from __future__ import annotations
+
 import warnings
 
 import pandas as pd

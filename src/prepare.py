@@ -827,8 +827,9 @@ def _write_omics_long(
     writer = None
     try:
         print(f"  Writing long table for {len(genes)} {row_name} and {len(columns)} cell lines")
+        print("  Progress is printed about every 10,000 genes.")
         for start in range(0, len(genes), 400):
-            if start == 0 or (start // 400) % 25 == 0:
+            if start == 0 or (start // 400) % 25 == 0 or start + 400 >= len(genes):
                 print(f"  Rows {start + 1}-{min(start + 400, len(genes))} of {len(genes)}")
             chunk_genes = genes[start : start + 400]
             melted = None

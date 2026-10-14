@@ -1,5 +1,7 @@
 """Utility functions."""
 
+from __future__ import annotations
+
 from math import floor, log10
 
 import numpy as np

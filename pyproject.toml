@@ -61,3 +61,4 @@ py-modules = [
 # still resolves after pip install.
 [tool.setuptools.data-files]
 metadata = ["metadata/*.csv", "metadata/*.yaml"]
+"metadata/bundled_inputs" = ["metadata/bundled_inputs/*"]

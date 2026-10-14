@@ -1,0 +1,4 @@
+release,filename,md5_hash
+DEMETER2 Data v6,D2_combined_gene_dep_scores.csv,e82566a48993753c20ea5f480f1867ec
+Sanger GDSC1 and GDSC2,sanger-dose-response.csv,5ce1c2450c27f5bcf876e3fe276335d9
+Sanger GDSC1 and GDSC2,sanger-viability.csv,f804b4d5eb25e4fb6b6f2e723107641f

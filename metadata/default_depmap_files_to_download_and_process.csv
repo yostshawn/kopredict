@@ -12,8 +12,6 @@ release,filename
 {depmap},OmicsGlobalSignatures.csv
 {depmap},OmicsCNGeneMC_WES.csv
 DEMETER2 Data v6,D2_combined_gene_dep_scores.csv
-Sanger GDSC1 and GDSC2,sanger-dose-response.csv
-Sanger GDSC1 and GDSC2,sanger-viability.csv
 Harmonized Public Proteomics 26Q1,harmonized_Sanger_MS_2022.csv
 Harmonized Public Proteomics 26Q1,harmonized_MS_CCLE_Gygi.csv
 Harmonized Public Proteomics 26Q1,harmonized_RPPA_CCLE.csv

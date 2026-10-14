@@ -1,5 +1,7 @@
 """Permutation testing for p-value cutoff estimation."""
 
+from __future__ import annotations
+
 import os
 import threading
 import warnings

@@ -1,5 +1,7 @@
 """Plotting functions for boxplots and oncoplots."""
 
+from __future__ import annotations
+
 import os
 import datetime
 import textwrap

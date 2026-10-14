@@ -6,8 +6,11 @@ with the target dependency table, z-score dep scores, filter features by *mean* 
 by Jaccard overlap (see ``pipeline.determine_best_biomarker_sets``).
 """
 
+from __future__ import annotations
+
 import re
 import sys
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -216,8 +219,13 @@ def _score_group_means(score_column, fdf, tdf):
     scores = scores[finite_score]
     n_ones = (values == 1).sum(axis=1)
     n_zeros = (values == 0).sum(axis=1)
-    sum_ones = (values == 1) @ scores
-    sum_zeros = (values == 0) @ scores
+    ones = values == 1
+    zeros = values == 0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            sum_ones = ones @ scores
+            sum_zeros = zeros @ scores
     mean_ones = np.full(len(n_ones), np.nan, dtype=np.float64)
     mean_zeros = np.full(len(n_zeros), np.nan, dtype=np.float64)
     np.divide(sum_ones, n_ones, out=mean_ones, where=n_ones > 0)

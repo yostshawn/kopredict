@@ -9,6 +9,8 @@ All resolution funnels through ``local_data.load_cellline_models`` and exact str
 matching on model fields (no case folding).
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 import pandas as pd

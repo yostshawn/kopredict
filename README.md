@@ -13,13 +13,27 @@ Python 3.9 or newer. Processed files go in `data/` (override with `KOPREDICT_DAT
 ```bash
 kopredict-download
 kopredict-download --depmap-release 25Q3
+kopredict-download --catalog /path/to/DepMap_available_downloads.csv
 ```
 
-- `--depmap-release` is the DepMap quarter (default `26Q1`). Every `{depmap}` filename must exist in that release.
-- [`metadata/20260920_DepMap_available_downloads.csv`](metadata/20260920_DepMap_available_downloads.csv) is the catalog, including signed URLs. Those URLs expire. Replace the file from [depmap.org/portal/api/download/files](https://depmap.org/portal/api/download/files) when a link fails. Three older files have locally computed checksums (`D2_combined_gene_dep_scores.csv`, `sanger-dose-response.csv`, `sanger-viability.csv`). A blank `md5_hash` stops prepare.
-- [`metadata/default_depmap_files_to_download_and_process.csv`](metadata/default_depmap_files_to_download_and_process.csv) chooses which catalog rows to fetch. `{depmap}` follows `--depmap-release`. Other rows, such as DEMETER2, GDSC, and proteomics, keep the release written in the CSV.
-- [`metadata/additional_datasets_to_download.csv`](metadata/additional_datasets_to_download.csv) lists files outside the catalog. If Cell.com blocks the Petljak et al. signature workbook, save [mmc3.xlsx](https://www.cell.com/cms/10.1016/j.cell.2019.02.012/attachment/4e70a2ab-6758-47e5-a843-802a5474bc82/mmc3.xlsx) ([paper](https://www.cell.com/cell/fulltext/S0092-8674(19)30161-8)) as `data/raw/mmc3.xlsx`. Prepare reads the sheet `COSMIC CellLines Signatures`.
-- GDSC dose-response and viability are downloaded only. Drug-response search is not implemented yet.
+`kopredict-download` arguments:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--depmap-release QUARTER` | `26Q1` | DepMap Public quarter. Every `{depmap}` filename must exist in that release. |
+| `--catalog PATH` | `metadata/20260920_DepMap_available_downloads.csv` | Catalog CSV with signed download URLs. |
+| `--data-dir PATH` | `KOPREDICT_DATA_DIR` or `./data` | Where `raw/` and processed files go. |
+
+Catalog flow:
+
+- By default the command uses [`metadata/20260920_DepMap_available_downloads.csv`](metadata/20260920_DepMap_available_downloads.csv). That file supplies the signed URLs for the DepMap inputs. It does not fetch a new catalog from DepMap.
+- Signed URLs expire. When a link fails, open [depmap.org/portal/api/download/files](https://depmap.org/portal/api/download/files) in a browser, save the CSV, and either replace the metadata file or pass `--catalog PATH`.
+- DepMap leaves `md5_hash` blank for some older files (for example DEMETER2). Blank checksums are filled from [`metadata/known_md5_hashes.csv`](metadata/known_md5_hashes.csv).
+
+Other inputs:
+
+- [`metadata/default_depmap_files_to_download_and_process.csv`](metadata/default_depmap_files_to_download_and_process.csv) chooses which catalog rows to fetch. `{depmap}` follows `--depmap-release`. DEMETER2 and proteomics keep the release written in the CSV. GDSC drug files are not required for the current search.
+- [`metadata/additional_datasets_to_download.csv`](metadata/additional_datasets_to_download.csv) lists the HRD and SBS workbooks. The command tries each URL, then falls back to copies in [`metadata/bundled_inputs/`](metadata/bundled_inputs/). Prepare reads `mmc3.xlsx` sheet `COSMIC CellLines Signatures`.
 
 ## 2) Prepare data
 
@@ -28,7 +42,14 @@ kopredict-prepare
 kopredict-prepare --depmap-release 25Q3
 ```
 
-Use the same `--depmap-release` as the download. A missing file, a blank `md5_hash`, or a bad checksum stops the command. Non-cancer models are left out of the feature matrix.
+`kopredict-prepare` arguments:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--depmap-release QUARTER` | `26Q1` | Same quarter used for download; used to check raw files. |
+| `--data-dir PATH` | `KOPREDICT_DATA_DIR` or `./data` | Processed output directory (`raw/` is `data/raw`). |
+
+Use the same `--depmap-release` as the download. A missing file or a bad checksum stops the command. Non-cancer models are left out of the feature matrix. While writing the long omics table, progress lines print about every 10,000 genes (for example `Rows 1-400` then `Rows 10001-10400`); that is expected, not an error.
 
 | File | Contents |
 | --- | --- |
@@ -69,7 +90,13 @@ kopredict path/to/run.yaml
 kopredict --help
 ```
 
-Settings are in [`metadata/kopredict_default.yaml`](metadata/kopredict_default.yaml): target `PRMT5`, dataset `rnai`, cohorts in [`metadata/oncotree_cohorts_solid.csv`](metadata/oncotree_cohorts_solid.csv). Copy that file to change a run. Omitted keys are filled from the default. Set `cancer_types` or `cohort_csv`, not both.
+`kopredict` arguments:
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `config` | `metadata/kopredict_default.yaml` | YAML run file. |
+
+All search settings live in that YAML file, not as CLI flags. See [`metadata/kopredict_default.yaml`](metadata/kopredict_default.yaml): target `PRMT5`, dataset `rnai`, cohorts in [`metadata/oncotree_cohorts_solid.csv`](metadata/oncotree_cohorts_solid.csv). Copy that file to change a run. Omitted keys are filled from the default. Set `cancer_types` or `cohort_csv`, not both.
 
 - One cohort: set `oncotree_column` and `cancer_types` (one value or a list). Allowed values are in [`metadata/oncotree.yaml`](metadata/oncotree.yaml). `PANCANCER` and `SOLID` do not use `oncotree_column`.
 - Several cohorts: set `cancer_types` to null and `cohort_csv` to a CSV. A path such as `metadata/oncotree_cohorts_solid.csv` is resolved from the source directory. Required columns are `oncotree_column` and `name`. `output_name`, when present, is the result-folder name. A `name` may list several values separated by semicolons. Quote values that contain a comma.
@@ -88,12 +115,14 @@ Both match the default search. `n_jobs` is 16 so the shuffles run together. `exa
 
 ## How a feature is chosen
 
-### Inverse features
+### Forward and inverse tests
 
-- The forward test selects the `1`s and keeps the original name.
-- The inverse test selects the `0`s, swaps `0` and `1` (missing stays missing), and adds `_inverse` to every `;` and `:` piece. `MTAP_homdel:MTAP_ko` becomes `MTAP_homdel_inverse:MTAP_ko_inverse`.
-- Sensitivity uses the lower tail. Resistance uses the upper tail.
-- When both directions pass, the search keeps the selected group with fewer cell lines. A tie keeps the forward name. The other direction is excluded for the rest of the branch.
+Each binary feature is tested twice against the target CRISPR or RNAi score.
+
+- **Forward:** Do cell lines with a `1` for the feature have different scores from cell lines with a `0`? A hit keeps the original name. The selected group is the `1`s.
+- **Inverse:** Do cell lines with a `0` for the feature have different scores? A hit swaps the row (`0`↔`1`, missing stays missing) and adds `_inverse` to every `;` and `:` piece. Example: `MTAP_homdel:MTAP_ko` becomes `MTAP_homdel_inverse:MTAP_ko_inverse`. Later steps treat a `1` on that swapped row as “was `0` on the original feature.”
+- Sensitivity looks for lower scores (lower tail). Resistance looks for higher scores (upper tail).
+- When both directions pass, the search keeps the selected group with fewer cell lines. A tie keeps the forward name. Choosing one direction excludes the other for the rest of that branch.
 
 ### P-value cutoffs
 
@@ -108,14 +137,19 @@ Both match the default search. `n_jobs` is 16 so the shuffles run together. `exa
 - Jaccard uses cell lines called `1`. Missing is not a `1`.
 - Sensitivity and resistance are grouped separately. If a feature and its inverse both passed, only the smaller selected group is grouped.
 
-### Adding a feature
+### Adding a feature (AND and OR)
+
+Root markers are found once on the full cohort. From those same roots the search grows two trees:
+
+- **AND:** each child is tested only among cell lines that already carry the parent feature. The selected group has both the parent and the child. Use this when you want a smaller, more specific subset.
+- **OR:** each child is tested among cell lines that do not carry the parent feature. The selected group has the child but not the parent. Use this when you want markers that explain other lines left out by the parent.
 
 `X` in the diagrams is that step's permutation p-value cutoff.
 
 - A sensitive root is at or below `min_effect_size` versus the cohort (default −0.2). A resistant root is at or above `resistance_min_effect_size` (default +0.2).
-- AND children are tested in cell lines that carry the parent. Same-direction children use `child_min_effect_size` / `child_resistance_min_effect_size` (default ±0.1 versus the parent).
+- AND same-direction children use `child_min_effect_size` / `child_resistance_min_effect_size` (default ±0.1 versus the parent).
 - A resistant child under a sensitive parent also needs the parent at or below `strong_min_effect_size` (default −0.2). A resistant parent continues only with another resistant child.
-- OR children are tested in cell lines that lack the parent. Same-direction OR children use ±0.2 versus WT. A direction switch uses ±0.2 versus the parent.
+- OR same-direction children use ±0.2 versus WT. A direction switch uses ±0.2 versus the parent.
 - Siblings expand best first. A sibling cannot see itself or an earlier sibling.
 
 ![AND tree. Child nodes contain both the parent feature and the child feature.](example/and_tree.svg)

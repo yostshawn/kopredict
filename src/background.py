@@ -1,5 +1,7 @@
 """Select background cell lines from OmicsFull_processed.parquet.gz."""
 
+from __future__ import annotations
+
 import pandas as pd
 from scipy import stats
 
