@@ -202,6 +202,19 @@ def expanded_feature_labels(names) -> list[str]:
     return labels
 
 
+def _safe_matmul(left, right):
+    """Matrix multiply while ignoring benign NumPy matmul RuntimeWarnings.
+
+    Boolean×float matmuls can emit divide/overflow/invalid warnings from the
+    BLAS path even when empty groups are filtered afterward. Results used by
+    callers are unchanged.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            return left @ right
+
+
 def _score_group_means(score_column, fdf, tdf):
     """Mean and count of the 1s and the 0s. Missing feature cells and scores are left out."""
     if fdf is None or fdf.empty or tdf is None or tdf.empty:
@@ -221,11 +234,8 @@ def _score_group_means(score_column, fdf, tdf):
     n_zeros = (values == 0).sum(axis=1)
     ones = values == 1
     zeros = values == 0
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-            sum_ones = ones @ scores
-            sum_zeros = zeros @ scores
+    sum_ones = _safe_matmul(ones, scores)
+    sum_zeros = _safe_matmul(zeros, scores)
     mean_ones = np.full(len(n_ones), np.nan, dtype=np.float64)
     mean_zeros = np.full(len(n_zeros), np.nan, dtype=np.float64)
     np.divide(sum_ones, n_ones, out=mean_ones, where=n_ones > 0)
@@ -463,7 +473,7 @@ def ranksums_less_pvalues(features: pd.DataFrame, scores: pd.Series) -> pd.DataF
         zeros = is_zero[rows][:, present]
         n1 = ones.sum(axis=1)
         n0 = zeros.sum(axis=1)
-        rank_sum = ones @ ranks
+        rank_sum = _safe_matmul(ones, ranks)
         total = n1 + n0
         expected = n1 * (total + 1) / 2.0
         variance = n1 * n0 * (total + 1) / 12.0
@@ -682,8 +692,8 @@ def _effect_keep_mask(
 
 
 def _group_means_for_layout(layout, score_m):
-    sum_ones = layout.is_one @ score_m
-    sum_zeros = layout.is_zero @ score_m
+    sum_ones = _safe_matmul(layout.is_one, score_m)
+    sum_zeros = _safe_matmul(layout.is_zero, score_m)
     mean_ones = np.full(len(layout.n_ones), np.nan, dtype=np.float64)
     mean_zeros = np.full(len(layout.n_zeros), np.nan, dtype=np.float64)
     np.divide(sum_ones, layout.n_ones, out=mean_ones, where=layout.n_ones > 0)
@@ -710,7 +720,7 @@ def _ranksum_tails(matrix, scores, group_ids, present_masks, selected):
         zeros = is_zero[rows][:, present]
         n1 = ones.sum(axis=1)
         n0 = zeros.sum(axis=1)
-        rank_sum = ones @ ranks
+        rank_sum = _safe_matmul(ones, ranks)
         total = n1 + n0
         expected = n1 * (total + 1) / 2.0
         variance = n1 * n0 * (total + 1) / 12.0
